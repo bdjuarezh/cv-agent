@@ -1,0 +1,66 @@
+# Esquema en src/cv_agent/knowledge/models.py::Experience
+# start/end en formato "YYYY-MM"; end: null si es el rol actual.
+# `id` debe ser único entre este archivo y projects.yaml — skills.yaml lo referencia en `evidence`.
+
+- id: exp_tellso_sr_2026
+  company: "Tellso (cliente: INFONAVIT)"
+  role: "Científico de Datos Sr."
+  start: "2026-06"
+  end: null
+  location: "CDMX"
+  summary: >
+    Desarrollo de chatbots internos con infraestructura RAG end-to-end en IBM Cloud para
+    automatizar auditorías documentales, y evaluación técnica de proveedores de LLM (Claude y
+    OpenAI) para la operación de INFONAVIT.
+  stack: [python, rag, ibm cloud, embeddings, elasticsearch, claude platform, openai platform]
+  achievements:
+    - text: "Desarrollé un chatbot interno de consulta documental con infraestructura RAG end-to-end en IBM Cloud para automatizar auditorías de proyectos de INCO (Constructora INFONAVIT), reduciendo tiempo de búsqueda manual sobre documentación técnica y normativa"
+    - text: "Diseñé e implementé pipeline de embeddings, indexado vectorial y motor de búsqueda semántica como capa de recuperación de contexto para chatbots e identificación oportuna de quejas en el CRM"
+    - text: "Orquesté pruebas de concepto (POCs) sobre Claude Platform y OpenAI Platform para evaluar viabilidad técnica de distintos proveedores de LLM, definiendo métricas de evaluación de desempeño (calidad de respuesta, latencia, tasa de error) y costo de implementación por proveedor"
+
+- id: exp_tellso_jr_2023
+  company: "Tellso (cliente: INFONAVIT)"
+  role: "Científico de Datos Jr."
+  start: "2023-09"
+  end: "2026-05"
+  location: "CDMX"
+  summary: >
+    Construcción de chatbots con componente RAG en IBM Cloud, ejecución de modelos de
+    crédito/cartera en SAS Viya, y migración de analítica avanzada de R a SQL dentro del data
+    warehouse.
+  stack: [python, rag, ibm cloud, sas viya, r, sql, etl]
+  achievements:
+    - text: "Construí y orquesté chatbots internos con componente RAG en IBM Cloud, integrando recuperación semántica sobre documentación técnica como capa de contexto para el LLM"
+    - text: "Supervisé y ejecuté modelos de Crédito/Cartera en SAS Viya (propensión al ejercicio del crédito, segmentación de riesgo de impago, riesgo financiero VaR)"
+    - text: "Desarrollé algoritmos de analítica avanzada y lideré la migración de procedimientos analíticos de R a SQL, operando directamente dentro del data warehouse"
+      metric: {value: 10, unit: "x mejora en tiempos de ejecución"}
+    - text: "Gestioné flujos ETL para alimentar tableros de negocio y modelos productivos en SAS Viya"
+
+- id: exp_defoe_2022
+  company: "Defoe: Experts on Social Reporting"
+  role: "Analista de Datos"
+  start: "2022-11"
+  end: "2023-08"
+  location: "CDMX"
+  summary: >
+    Elaboración de dashboards y análisis de datos en R; liderazgo de un proyecto de visión por
+    computadora para extracción automática de información de partidos de fútbol a partir de
+    video.
+  stack: [r, tableau, highcharts, r shiny, yolo, visión computacional]
+  achievements:
+    - text: "Elaboré dashboards (Tableau, Highcharts, R Shiny) e implementé análisis de datos en R"
+    - text: "Lideré un proyecto de visión por computadora para extracción automática de información de partidos de fútbol a partir de video, usando arquitecturas ANN de estado del arte (YOLO, segmentación de imágenes)"
+
+- id: exp_quarantinehub_2020
+  company: "Quarantine HUB MX"
+  role: "Community Lead"
+  start: "2020-05"
+  end: "2021-01"
+  location: "CDMX (remoto)"
+  summary: >
+    Divulgación de simulaciones numéricas en física e IA, y organización de hackathons
+    solidarios durante la pandemia de COVID-19.
+  stack: []
+  achievements:
+    - text: "Impartí cursos de simulaciones numéricas en física e IA"
+    - text: "Organicé hackathons para recaudación de fondos destinados a hospitales de Oaxaca durante la pandemia de COVID-19"

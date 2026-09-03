@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>cv-agent — demo</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: system-ui, -apple-system, sans-serif;
+    background: #f7f7f8; color: #1a1a1a; display: flex; flex-direction: column;
+    align-items: center; min-height: 100vh; padding: 24px 12px;
+  }
+  .wrap { width: 100%; max-width: 720px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #666; font-size: 13px; margin-bottom: 16px; }
+  .config {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    background: #fff; border: 1px solid #e2e2e5; border-radius: 10px;
+    padding: 12px; margin-bottom: 16px;
+  }
+  .config label { font-size: 11px; color: #666; display: block; margin-bottom: 3px; }
+  .config input {
+    width: 100%; padding: 7px 9px; border: 1px solid #ccc; border-radius: 6px; font-size: 13px;
+  }
+  #chat {
+    background: #fff; border: 1px solid #e2e2e5; border-radius: 10px;
+    min-height: 320px; max-height: 55vh; overflow-y: auto; padding: 16px; margin-bottom: 12px;
+  }
+  .msg { margin-bottom: 14px; line-height: 1.5; }
+  .msg .role { font-size: 11px; font-weight: 600; text-transform: uppercase; color: #888; margin-bottom: 3px; }
+  .msg.user .role { color: #2563eb; }
+  .msg.assistant .role { color: #16a34a; }
+  .msg .text { white-space: pre-wrap; font-size: 14.5px; }
+  .msg .tools { margin-top: 5px; }
+  .tool-badge {
+    display: inline-block; background: #fef3c7; color: #92400e; font-size: 11px;
+    padding: 2px 8px; border-radius: 999px; margin-right: 4px;
+  }
+  .msg.error .text { color: #b91c1c; }
+  form { display: flex; gap: 8px; }
+  #question {
+    flex: 1; padding: 10px 12px; border: 1px solid #ccc; border-radius: 8px; font-size: 14px;
+  }
+  button {
+    padding: 10px 18px; border: none; border-radius: 8px; background: #111; color: #fff;
+    font-size: 14px; cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .hint { font-size: 12px; color: #999; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>cv-agent — demo</h1>
+  <p class="sub">
+    Consume <code>POST /v1/responses</code> (Open Responses, streaming) directo desde el
+    navegador. La API key no viaja en este archivo — la escribes tú abajo y solo vive en tu
+    navegador (<code>localStorage</code>).
+  </p>
+
+  <div class="config">
+    <div>
+      <label for="baseUrl">URL base del servicio</label>
+      <input id="baseUrl" placeholder="https://tu-servicio.run.app/v1" />
+    </div>
+    <div>
+      <label for="apiKey">API key (Bearer)</label>
+      <input id="apiKey" type="password" placeholder="••••••••" />
+    </div>
+  </div>
+
+  <div id="chat"></div>
+
+  <form id="form">
+    <input id="question" placeholder="Escribe tu pregunta…" autocomplete="off" />
+    <button id="send" type="submit">Enviar</button>
+  </form>
+  <p class="hint">El historial completo se reenvía en cada turno (así es como llama la plataforma real — ver ARCHITECTURE.md §3), no se usa <code>previous_response_id</code>.</p>
+</div>
+
+<script>
+const chatEl = document.getElementById("chat");
+const formEl = document.getElementById("form");
+const questionEl = document.getElementById("question");
+const sendBtn = document.getElementById("send");
+const baseUrlEl = document.getElementById("baseUrl");
+const apiKeyEl = document.getElementById("apiKey");
+
+// Config persiste solo en este navegador — nunca se escribe en el archivo ni se manda a nadie
+// más que al propio servicio configurado.
+try {
+  baseUrlEl.value = localStorage.getItem("cv_agent_base_url") || "";
+  apiKeyEl.value = localStorage.getItem("cv_agent_api_key") || "";
+} catch (e) { /* localStorage puede fallar en modo privado — no es crítico */ }
+
+let history = []; // [{type:"message", role, content:[{type,text}]}]
+
+function addMessage(role, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  div.innerHTML = `<div class="role">${role}</div><div class="text"></div><div class="tools"></div>`;
+  div.querySelector(".text").textContent = text;
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  return div;
+}
+
+function addToolBadge(msgDiv, name) {
+  const badge = document.createElement("span");
+  badge.className = "tool-badge";
+  badge.textContent = "🔧 " + name;
+  msgDiv.querySelector(".tools").appendChild(badge);
+}
+
+async function sendQuestion(question) {
+  const baseUrl = baseUrlEl.value.trim().replace(/\/$/, "");
+  const apiKey = apiKeyEl.value.trim();
+  if (!baseUrl || !apiKey) {
+    addMessage("error", "Configura la URL base y la API key arriba primero.");
+    return;
+  }
+  try {
+    localStorage.setItem("cv_agent_base_url", baseUrl);
+    localStorage.setItem("cv_agent_api_key", apiKey);
+  } catch (e) {}
+
+  addMessage("user", question);
+  history.push({ type: "message", role: "user", content: [{ type: "input_text", text: question }] });
+
+  const assistantDiv = addMessage("assistant", "");
+  const textEl = assistantDiv.querySelector(".text");
+  let assistantText = "";
+
+  sendBtn.disabled = true;
+  try {
+    const resp = await fetch(baseUrl + "/responses", {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ input: history, stream: true }),
+    });
+
+    if (!resp.ok || !resp.body) {
+      const errBody = await resp.text();
+      textEl.textContent = "Error HTTP " + resp.status + ": " + errBody;
+      assistantDiv.className = "msg error";
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop(); // último bloque puede estar incompleto
+
+      for (const block of blocks) {
+        if (!block.trim()) continue;
+        if (block.includes("data: [DONE]")) continue;
+
+        const dataLine = block.split("\n").find((l) => l.startsWith("data: "));
+        if (!dataLine) continue;
+        const payload = JSON.parse(dataLine.slice(6));
+
+        if (payload.type === "cv_agent.tool_call") {
+          addToolBadge(assistantDiv, payload.name);
+        } else if (payload.type === "response.output_text.delta") {
+          assistantText += payload.delta;
+          textEl.textContent = assistantText;
+        } else if (payload.type === "response.failed") {
+          textEl.textContent = "Error: " + (payload.error && payload.error.message ? payload.error.message : "desconocido");
+          assistantDiv.className = "msg error";
+        }
+        chatEl.scrollTop = chatEl.scrollHeight;
+      }
+    }
+
+    if (assistantText) {
+      history.push({ type: "message", role: "assistant", content: [{ type: "output_text", text: assistantText, annotations: [] }] });
+    }
+  } catch (err) {
+    textEl.textContent = "Error de red: " + err.message;
+    assistantDiv.className = "msg error";
+  } finally {
+    sendBtn.disabled = false;
+  }
+}
+
+formEl.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const q = questionEl.value.trim();
+  if (!q) return;
+  questionEl.value = "";
+  sendQuestion(q);
+});
+</script>
+</body>
+</html>

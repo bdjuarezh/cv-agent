@@ -1,0 +1,97 @@
+# Esquema en src/cv_agent/knowledge/models.py::Skill
+# `level` (1-5) no viene del CV fuente (que no autoasigna niveles) — es una estimación razonable
+# según qué tan explícita y reciente es la evidencia de uso en experience.yaml. Ajustar si no
+# refleja el nivel real.
+# `evidence` solo apunta a ids cuyo texto de logros nombra la tecnología explícitamente — varias
+# skills del CV (Julia, Git, LangChain, LlamaIndex, GCP, SAP HANA) no tienen esa mención literal
+# en ningún logro, así que quedan con evidence: [] a propósito, no por descuido.
+
+- name: "R"
+  category: "lenguaje"
+  level: 4
+  evidence: [exp_tellso_jr_2023, exp_defoe_2022]
+
+- name: "SQL"
+  category: "lenguaje"
+  level: 4
+  evidence: [exp_tellso_jr_2023]
+
+- name: "Python"
+  category: "lenguaje"
+  level: 4
+  evidence: [exp_tellso_sr_2026, exp_tellso_jr_2023]
+
+- name: "Julia"
+  category: "lenguaje"
+  level: 2
+  evidence: []
+
+- name: "Git"
+  category: "herramienta"
+  level: 3
+  evidence: []
+
+- name: "Elasticsearch"
+  category: "data"
+  level: 3
+  evidence: []
+
+- name: "LangChain"
+  category: "framework"
+  level: 3
+  evidence: []
+
+- name: "LlamaIndex"
+  category: "framework"
+  level: 3
+  evidence: []
+
+- name: "RAG (retrieval-augmented generation)"
+  category: "práctica"
+  level: 4
+  evidence: [exp_tellso_sr_2026, exp_tellso_jr_2023]
+
+- name: "IBM Cloud"
+  category: "plataforma"
+  level: 4
+  evidence: [exp_tellso_sr_2026, exp_tellso_jr_2023]
+
+- name: "Claude Platform"
+  category: "plataforma"
+  level: 3
+  evidence: [exp_tellso_sr_2026]
+
+- name: "OpenAI Platform"
+  category: "plataforma"
+  level: 3
+  evidence: [exp_tellso_sr_2026]
+
+- name: "GCP"
+  category: "plataforma"
+  level: 2
+  evidence: []
+
+- name: "SAS Viya 4.0"
+  category: "plataforma"
+  level: 4
+  evidence: [exp_tellso_jr_2023]
+
+- name: "SAP HANA"
+  category: "plataforma"
+  level: 2
+  evidence: []
+
+- name: "Visión computacional (YOLO)"
+  category: "práctica"
+  level: 3
+  evidence: [exp_defoe_2022]
+
+- name: "Machine Learning Using SAS Viya"
+  category: "certificación"
+  level: 3
+  evidence: []
+
+- name: "Applied Data Science with Python"
+  category: "certificación"
+  level: 3
+  evidence: []

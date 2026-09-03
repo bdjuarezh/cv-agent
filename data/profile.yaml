@@ -1,0 +1,44 @@
+# Esquema en src/cv_agent/knowledge/models.py::Profile
+# `languages` queda vacío a propósito: el CV fuente no tiene una sección de idiomas — no se
+# inventa aquí.
+
+name: "Bryan David Juárez Hernández"
+headline: "Especialista en Inteligencia Artificial"
+summary: >
+  Especialista en Inteligencia Artificial con 6 años de experiencia, enfocado en Gen AI orientado
+  a tareas de NLP y chatbots, deep learning para visión computacional y modelos de crédito y
+  cartera. Con sede en CDMX.
+
+education:
+  - institution: "Facultad de Ciencias, UNAM"
+    degree: "Diplomado en Finanzas Cuantitativas (promedio 10)"
+    year: 2025
+  - institution: "IIMAS, UNAM"
+    degree: "Maestría en Ciencias de la Computación (promedio 9.28)"
+    year: 2022
+  - institution: "Facultad de Ciencias, UNAM"
+    degree: "Licenciatura en Física (promedio 8.58)"
+    year: 2019
+
+languages: []
+
+# Cada canal de contacto declara explícitamente si es público. get_contact() solo debe devolver
+# los que tengan public: true — la regla de PII vive aquí, en el dato, no solo en el prompt
+# (ARCHITECTURE.md §4).
+contact:
+  - label: "GitHub"
+    value: "https://github.com/bdjuarezh"
+    public: true
+  - label: "LinkedIn"
+    value: "https://linkedin.com/in/bdjuarez"
+    public: true
+  - label: "Correo profesional"
+    value: "bryan.juarez@ciencias.unam.mx"
+    public: true
+  - label: "Teléfono"
+    value: "+52 55 0000 0000"
+    public: false
+
+pii_policy: >
+  Público: GitHub, LinkedIn, correo profesional. Privado: teléfono, domicilio, cualquier dato
+  personal no listado arriba como público.

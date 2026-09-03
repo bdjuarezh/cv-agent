@@ -1,0 +1,5 @@
+# El CV fuente no tiene una sección de "Proyectos" separada de la experiencia laboral — todo el
+# trabajo técnico (chatbots RAG, modelos de crédito, visión computacional) está documentado como
+# achievements dentro de experience.yaml. Lista vacía a propósito, no un placeholder sin llenar.
+# Esquema en src/cv_agent/knowledge/models.py::Project si se agregan proyectos personales después.
+[]

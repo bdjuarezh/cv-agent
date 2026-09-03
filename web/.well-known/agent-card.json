@@ -1,0 +1,28 @@
+{
+  "protocolVersion": "1.0",
+  "name": "CV Agent",
+  "description": "Agente conversacional sobre la trayectoria profesional del autor del CV.",
+  "version": "1.0.0",
+  "url": "https://cv-agent-898708863647.northamerica-south1.run.app/v1",
+  "supportedInterfaces": [
+    {
+      "url": "https://cv-agent-898708863647.northamerica-south1.run.app/v1",
+      "protocolVersion": "1.0",
+      "transport": "HTTP+JSON"
+    }
+  ],
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "capabilities": { "streaming": true },
+  "skills": [
+    {
+      "id": "professional-profile",
+      "name": "Perfil profesional",
+      "description": "Responde sobre experiencia, habilidades, proyectos y trayectoria.",
+      "tags": ["cv", "carrera", "entrevista"]
+    }
+  ],
+  "securitySchemes": {
+    "bearer": { "type": "http", "scheme": "bearer" }
+  }
+}
