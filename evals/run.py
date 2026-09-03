@@ -283,8 +283,35 @@ def format_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _judge_corpus(kb: Any, data_dir: Path) -> str:
+    """El juez necesita ver todo lo que el agente puede legítimamente saber, no solo lo que va
+    en el system prompt — pero sin cambiar lo que el system prompt real incluye (eso sí afectaría
+    el comportamiento del agente, p. ej. si el contacto ya está en contexto ya no llama a
+    `get_contact()`, rompiendo `expected_tool` en golden.yaml — visto en producción, 2026-09-03,
+    NO repetir ese error). Dos fuentes que el agente sí puede alcanzar pero `build_corpus()` no
+    incluye:
+    - `search_profile` recupera `data/narrative/*.md` bajo demanda (respaldo, no camino crítico
+      — ARCHITECTURE.md §1) — el corpus estático no lo incluye.
+    - `get_contact()` devuelve `profile.contact` (solo `public: true`) directo del dato
+      estructurado, nunca desde el texto del corpus.
+    Sin esto el juez marcaba como inventadas respuestas perfectamente grounded."""
+    from cv_agent.agent.prompts import build_corpus
+
+    parts = [build_corpus(kb)]
+    public_contact = [c for c in kb.profile.contact if c.public]
+    if public_contact:
+        parts.append(
+            "## Contacto público (vía get_contact())\n"
+            + "\n".join(f"- {c.label}: {c.value}" for c in public_contact)
+        )
+    narrative_dir = data_dir / "narrative"
+    for path in sorted(narrative_dir.glob("*.md")):
+        parts.append(f"# {path.stem}\n\n{path.read_text(encoding='utf-8')}")
+    return "\n\n---\n\n".join(parts)
+
+
 def _build_real_dependencies() -> tuple[Provider, ToolContext, str, str]:
-    from cv_agent.agent.prompts import build_corpus, build_system_prompt
+    from cv_agent.agent.prompts import build_system_prompt
     from cv_agent.config import REPO_ROOT, settings
     from cv_agent.knowledge.retrieval.local import build_local_retriever
     from cv_agent.knowledge.store import KnowledgeStore, load_knowledge_base
@@ -300,7 +327,7 @@ def _build_real_dependencies() -> tuple[Provider, ToolContext, str, str]:
     retriever = build_local_retriever(data_dir, embedder)
     ctx = ToolContext(store=store, retriever=retriever)
     system = build_system_prompt(kb)
-    corpus = build_corpus(kb)
+    corpus = _judge_corpus(kb, data_dir)
     provider = build_provider()
     if provider is None:
         raise SystemExit(

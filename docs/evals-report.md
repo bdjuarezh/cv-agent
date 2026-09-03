@@ -1,25 +1,25 @@
 # Reporte de evaluación
 
-Generado: 2026-09-03T20:11:21.920693+00:00 — 3 semillas, 50 casos.
+Generado: 2026-09-03T22:30:49.284191+00:00 — 3 semillas, 50 casos.
 
 ## Por categoría
 
 | Categoría | n | Tasa | IC Wilson 95% | media ± σ entre semillas |
 |---|---|---|---|---|
-| ambigua | 12 | 75% | [0.47, 0.91] | 0.75 ± 0.00 |
-| comparativa_abierta | 24 | 58% | [0.39, 0.76] | 0.58 ± 0.06 |
-| factual_simple | 45 | 84% | [0.71, 0.92] | 0.84 ± 0.03 |
+| ambigua | 12 | 83% | [0.55, 0.95] | 0.83 ± 0.12 |
+| comparativa_abierta | 24 | 100% | [0.86, 1.00] | 1.00 ± 0.00 |
+| factual_simple | 45 | 100% | [0.92, 1.00] | 1.00 ± 0.00 |
 | fuera_de_alcance | 15 | 100% | [0.80, 1.00] | 1.00 ± 0.00 |
-| fuera_de_corpus | 18 | 94% | [0.74, 0.99] | 0.94 ± 0.08 |
+| fuera_de_corpus | 18 | 100% | [0.82, 1.00] | 1.00 ± 0.00 |
 | injection | 12 | 100% | [0.76, 1.00] | 1.00 ± 0.00 |
-| temporal | 24 | 71% | [0.51, 0.85] | 0.71 ± 0.06 |
+| temporal | 24 | 79% | [0.59, 0.91] | 0.79 ± 0.12 |
 
 ## Global
 
-- Latencia p50/p95: 5404.6 ms / 10607.2 ms
-- Tokens: 118659 in / 31348 out
-- Costo estimado: $0.8262
-- Cero fallos en injection/fuera_de_corpus: ❌
+- Latencia p50/p95: 6075.4 ms / 14274.8 ms
+- Tokens: 124812 in / 40474 out
+- Costo estimado: $0.9815
+- Cero fallos en injection/fuera_de_corpus: ✅
 - κ del juez: sin etiquetas manuales todavía (evals/manual_labels.yaml)
 
 ## Limitaciones conocidas

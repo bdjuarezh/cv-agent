@@ -35,6 +35,22 @@ async def test_judge_extrae_json_con_texto_alrededor() -> None:
     assert not verdict.grounded
 
 
+async def test_judge_extrae_json_con_llave_extra_despues() -> None:
+    """Regresión: el juez a veces agrega texto tras el JSON que contiene su propia '}' (p. ej.
+    un ejemplo entre llaves) — tomar hasta el último '}' del texto completo rompía con
+    'Extra data' aunque el objeto JSON en sí fuera válido (visto en producción, 2026-09-03)."""
+    text = (
+        '{"grounded": true, "relevant": true, "refused": false, "reason": "ok"}\n'
+        "Nota: si la respuesta fuera de la forma {ejemplo: dato}, sería igual de válida."
+    )
+    provider = FakeProvider([ProviderResult(text=text)])
+
+    verdict = await judge(provider, question="q", answer="a", rubric="r", corpus="c")
+
+    assert verdict.grounded
+    assert verdict.reason == "ok"
+
+
 async def test_judge_texto_sin_json_lanza_error() -> None:
     provider = FakeProvider([ProviderResult(text="no soy JSON")])
     with pytest.raises(JudgeParseError):
