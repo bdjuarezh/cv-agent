@@ -19,6 +19,109 @@ El corpus completo del CV vive en el system prompt (con prompt caching), no en u
 vectorial — el porqué está en `ARCHITECTURE.md` §1. Las herramientas resuelven lo que un LLM hace
 mal por su cuenta: fechas, conteos y agregaciones son deterministas, nunca aritmética del modelo.
 
+## Características principales
+
+- **Spec Open Responses completo**: `POST /v1/responses` con streaming SSE spec-válido,
+  `previous_response_id`, uniones discriminadas para los ítems de `input`, estricto al emitir
+  (todos los campos required, siempre) y permisivo al aceptar (`extra="allow"`).
+- **Contexto completo, no RAG**: el CV entero vive en el system prompt con prompt caching — a esta
+  escala, una base vectorial añade latencia y complejidad sin mejorar el recall.
+- **Aritmética temporal 100% determinista**: "cuántos años con X" o "qué hacías en \<año\>" nunca
+  las calcula el modelo — siempre pasan por unión de intervalos de fechas reales.
+- **Búsqueda híbrida como respaldo**: BM25 + embeddings (Vertex) fusionados por RRF y reordenados
+  con MMR sobre la narrativa larga — no es el camino crítico, cae a BM25 solo sin fallar.
+- **Guardrails de PII a nivel de dato**: cada canal de contacto declara `public: true/false` en el
+  propio YAML; la herramienta de contacto filtra ahí, no solo por instrucción de prompt.
+- **Anti-inyección por jerarquía de instrucciones**: el corpus es dato, nunca instrucciones —
+  cualquier orden embebida en él se ignora.
+- **Rechazo determinista de modalidades no soportadas**: imagen/archivo/audio en el input se
+  detectan y se responden sin gastar una llamada al LLM.
+- **Provider intercambiable**: `Provider` es un Protocol — API directa de Anthropic en producción,
+  Vertex AI soportado con el mismo contrato.
+- **Validado con evidencia real**: golden set de 50 casos, juez LLM con varias semillas y kappa de
+  Cohen contra etiquetas humanas, gate de cero fallos en inyección y preguntas fuera del corpus.
+- **Despliegue de mínimo privilegio**: Cloud Run, service account dedicada, API keys en Secret
+  Manager.
+
+## Stack
+
+| Capa | Tecnología |
+|---|---|
+| Lenguaje | Python 3.12, tipado completo (`mypy --strict`) |
+| Web | FastAPI + Pydantic v2 |
+| Modelo | Claude vía API de Anthropic (`anthropic` SDK) — Vertex AI soportado como alternativa |
+| Retrieval | `bm25s` + NumPy + embeddings de Vertex — sin base vectorial gestionada |
+| Estado | `cachetools.TTLCache` (`previous_response_id`) |
+| Observabilidad | `structlog` (JSON estructurado, correlacionado por `request_id`) |
+| Empaquetado | `uv` |
+| Calidad | `pytest`, `ruff`, `mypy --strict` |
+| Despliegue | Cloud Run + Secret Manager + Artifact Registry |
+
+## Árbol de arquitectura
+
+```
+src/cv_agent/
+├── api/                       # Transporte HTTP — el contrato del spec
+│   ├── routes_responses.py       # POST /v1/responses (streaming + no-streaming)
+│   ├── routes_meta.py            # /healthz, /.well-known/agent-card.json
+│   ├── normalize.py              # input del spec -> Message interno
+│   ├── auth.py                   # Authorization: Bearer
+│   ├── middleware.py             # request_id, límite de tamaño de body
+│   ├── ratelimit.py               # token bucket por IP
+│   ├── sse.py                     # secuencia de eventos SSE spec-válida
+│   └── errors.py                  # envelope de error del spec, nunca traceback
+├── agent/                     # Loop agéntico
+│   ├── loop.py                    # orquesta tool-use hasta end_turn
+│   ├── prompts.py                  # system prompt = corpus completo + reglas
+│   ├── tools.py                    # get_experience/projects/skills/contact, compute_years, search_profile
+│   └── guardrails.py                # heurística barata de inyección (la defensa real vive en el prompt)
+├── knowledge/                  # El CV como datos
+│   ├── models.py                    # esquema Pydantic (Profile, Experience, Project, Skill)
+│   ├── store.py                      # carga data/*.yaml
+│   ├── temporal.py                   # unión de intervalos — aritmética de fechas determinista
+│   ├── chunking.py                    # trocea data/narrative/*.md
+│   └── retrieval/local.py             # BM25 + denso + RRF + MMR
+├── providers/                   # LLM intercambiable (Protocol Provider)
+│   ├── base.py
+│   ├── anthropic_direct.py             # producción
+│   ├── vertex_anthropic.py             # alternativa (auth IAM)
+│   ├── anthropic_messages.py           # lógica compartida entre ambos
+│   ├── embeddings.py                    # Vertex Embeddings
+│   └── fake.py                          # FakeProvider — tests sin red
+├── schemas/                      # Modelos del contrato del spec
+│   ├── requests.py                     # CreateResponseBody, extra="allow"
+│   └── responses.py                     # Response, todos los campos required
+├── state/response_store.py         # previous_response_id -> TTLCache
+├── obs/                              # Observabilidad
+│   ├── logging.py                        # structlog JSON
+│   └── metrics.py                         # contadores en memoria
+├── config.py                       # Settings (pydantic-settings)
+└── cli.py                          # prueba rápida sin levantar HTTP
+```
+
+## Diagrama del proceso
+
+```mermaid
+flowchart TD
+    A[Cliente] -->|"POST /v1/responses"| B["Auth + rate limit"]
+    B --> C["Normalizar input al formato interno"]
+    C --> D{"¿Imagen, archivo<br/>o audio en el input?"}
+    D -->|Sí| E["Responder determinista:<br/>modalidad no soportada<br/>(sin llamar al LLM)"]
+    D -->|No| F["Loop agéntico"]
+    F --> G["Llamar a Claude<br/>system prompt = corpus completo del CV"]
+    G --> H{"stop_reason"}
+    H -->|tool_use| I["Ejecutar herramientas:<br/>get_experience · compute_years<br/>search_profile (BM25+embeddings) · ..."]
+    I --> F
+    H -->|end_turn| J["Guardar en response_store<br/>si store=true"]
+    J --> K["Construir Response del spec<br/>(todos los campos required)"]
+    E --> K
+    K --> L{"stream?"}
+    L -->|Sí| M["Emitir secuencia SSE"]
+    L -->|No| N["JSON directo"]
+    M --> O[Cliente]
+    N --> O
+```
+
 ## Correr en local
 
 Requiere [`uv`](https://docs.astral.sh/uv/) y una API key de Anthropic (`ANTHROPIC_API_KEY`) —
