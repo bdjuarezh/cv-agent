@@ -4,7 +4,11 @@
 tests
 evals/results
 docs
-*.md
+.pytest_cache
+# Ancla a la raíz — un *.md sin "/" también excluía data/narrative/*.md, que el contenedor sí
+# necesita en runtime (chunk_narrative() lo lee para search_profile). Causó "embeddings_stale" en
+# todo deploy: el contenedor arrancaba sin la narrativa, search_profile devolvía siempre vacío.
+/*.md
 __pycache__
 *.pyc
 .env
