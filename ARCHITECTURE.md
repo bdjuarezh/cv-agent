@@ -3,10 +3,10 @@
 Este documento explica las decisiones técnicas del proyecto y sus porqués. Está escrito para
 quien evalúa el reto: qué se decidió, qué alternativas se descartaron, y con qué evidencia.
 
-## 0. El contrato: servidor, no cliente
+## 0. El contrato: servidor
 
 El reto pide registrar un endpoint público compatible con [Open Responses](https://www.openresponses.org/).
-Eso invierte el rol habitual: normalmente uno *consume* `POST /v1/responses`; aquí se *implementa*.
+Eso invierte el rol habitual puesto que normalmente uno *consume* `POST /v1/responses` y aquí se *implementa*.
 
 ```
 Plataforma  ──POST /v1/responses──▶  Este servicio  ──Messages API──▶  Claude (API de Anthropic)
@@ -21,26 +21,22 @@ y recibe un `message` final; nunca se le devuelve un `function_call` esperando q
 
 ## 1. Decisión central: ¿RAG vectorial o contexto completo?
 
-La respuesta para este corpus es **no usar una base vectorial como camino crítico**, con
-argumento cuantitativo, no solo intuición.
+La respuesta para nuestro corpus es **no usar una base vectorial como camino crítico**.
 
 **Argumento de precisión.** Sea $C$ el tamaño del corpus (CV + proyectos + narrativa) y $N$ la
-ventana de contexto del modelo. Para un CV senior, $C \approx 10^4$ tokens; $N \approx 2\times10^5$,
-es decir $C/N \approx 0.05$. Descomponiendo la exactitud condicionando en el evento $R$ = "el
+ventana de contexto del modelo. Descomponiendo la exactitud condicionando en el evento $R$ = "el
 fragmento con la respuesta está en lo recuperado":
 
 $$P(\text{correcto}) = P(\text{correcto}\mid R)\,P(R) + P(\text{correcto}\mid \neg R)\,P(\neg R)$$
 
 Con contexto completo, $P(R)=1$ por construcción. Con top-$k$, $P(R)<1$ y
-$P(\text{correcto}\mid\neg R)\approx 0$ si el guardrail de abstención funciona (si no, alucina).
+$P(\text{correcto}\mid\neg R)\approx 0$ si el guardrail de abstención funciona (es decir que no va a alucinar).
 RAG solo puede *perder* exactitud salvo que $C>N$ o que domine la degradación tipo
-*lost-in-the-middle* — algo que no ocurre con $C/N=0.05$.
+*lost-in-the-middle* — algo que no ocurre con nuestro caso de uso.
 
 **Argumento de costo.** El contraargumento obvio es pagar $C$ tokens de input en cada llamada.
 Con *prompt caching*, escritura $\approx 1.25C$, lectura $\approx 0.10C$. Sobre $m$ llamadas
-dentro del TTL de caché:
-
-$$1.25C + 0.10C(m-1) < mC \iff m > 1.28$$
+dentro del TTL de caché.
 
 Desde la **segunda** llamada dentro del TTL, el caché ya gana. En una conversación de 6 turnos el
 ahorro es ≈82% del costo de input.
@@ -67,8 +63,8 @@ y stacks técnicos son tokens raros de IDF alto que un embedding denso diluye.
 
 ## 2. El detalle que separa un agente correcto de uno que alucina
 
-*"¿Cuántos años de experiencia tienes en X?"* es la pregunta más probable de un reclutador y la
-que más se responde mal, porque los LLMs suman intervalos que se traslapan. Si hubo tres roles
+*"¿Cuántos años de experiencia tienes en X?"* es la pregunta más probable  y la
+que más se podría responder mal, porque los LLMs suman intervalos que se traslapan. Si hubo tres roles
 con periodos $[s_i,e_i]$ usando la misma tecnología y dos se traslapan, la respuesta no es
 $\sum_i(e_i-s_i)$ — es la medida de la unión:
 
@@ -118,6 +114,10 @@ El endpoint es público: cualquiera puede escribirle.
 - **Abuso económico.** Rate limiting por IP (token bucket), límite de tamaño de body, tope a
   `max_output_tokens`, timeout con reintento (backoff + jitter) solo en 429/5xx — nunca en errores
   de validación del cliente.
+- **Modalidades no soportadas.** Imagen, archivo y audio en el input se detectan y se rechazan
+  de forma determinista antes de llamar al modelo — no es una decisión del LLM, así que la razón
+  se comunica siempre igual y ninguna llamada al proveedor se gasta en algo que no se va a
+  procesar. Solo se evalúa el último turno del usuario, no todo el historial (§8).
 
 ## 5. Evaluación
 
@@ -170,3 +170,28 @@ iterar su rúbrica — reportarlo es una señal de rigor, no un detalle opcional
 - **Streaming bufferizado, no incremental token a token.** La secuencia de eventos SSE es
   spec-válida y se cumple end to end, pero el texto se genera completo antes de emitir los
   eventos — es una mejora de latencia percibida pendiente, no de correctitud.
+
+## 8. Lo que reveló el tráfico real (encontrado y corregido)
+
+Desplegar contra la plataforma real, no solo correr `make eval` en local, sacó a la luz dos bugs
+que ningún test local hubiera atrapado:
+
+- **`.gcloudignore` excluía `data/narrative/*.md` de todo despliegue.** El patrón `*.md` sin
+  ancla a la raíz también capturaba la narrativa que el contenedor sí necesita en runtime — el
+  contenedor arrancaba sin ella, el chunking recalculado en frío no coincidía con
+  `data/chunks.json`, y `search_profile` devolvía siempre una lista vacía sin fallar visiblemente.
+  `make eval` nunca lo detectó porque corre en local, directo contra el filesystem, sin pasar por
+  `.gcloudignore`. Confirmado con tráfico real (`docs/platform-contract.md` §10b) tras el fix:
+  `search_profile` con latencia real de embeddings (~800 ms) en vez de los 0 ms sospechosos de un
+  retriever vacío.
+- **El rechazo de modalidad no soportada se pegaba a todos los turnos siguientes.** La plataforma
+  reproduce el transcript completo en `input` en cada turno (§3) — un adjunto rechazado en un
+  turno quedaba en `body.input` para siempre, y la comprobación determinista (§4) escaneaba todo
+  el historial en vez de solo el turno actual, así que el agente seguía respondiendo "modalidad no
+  soportada" en cualquier pregunta posterior. Corregido para mirar únicamente el último mensaje
+  del usuario.
+
+Ambos bugs comparten un patrón: pasaban toda prueba local (unitarias, `make eval`) y solo se
+manifestaban con el comportamiento real de la plataforma consumidora — la razón por la que este
+proyecto insiste en verificar contra tráfico real en vez de confiar solo en el entorno de
+desarrollo.
