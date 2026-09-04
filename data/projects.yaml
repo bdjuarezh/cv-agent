@@ -1,5 +1,24 @@
-# El CV fuente no tiene una sección de "Proyectos" separada de la experiencia laboral — todo el
-# trabajo técnico (chatbots RAG, modelos de crédito, visión computacional) está documentado como
-# achievements dentro de experience.yaml. Lista vacía a propósito, no un placeholder sin llenar.
-# Esquema en src/cv_agent/knowledge/models.py::Project si se agregan proyectos personales después.
-[]
+# Esquema en src/cv_agent/knowledge/models.py::Project
+
+- id: proj_cv_agent_2026
+  name: "cv-agent — agente conversacional de CV sobre Open Responses"
+  year: 2026
+  role: "Autor único"
+  problem: >
+    El reto pedía implementar, no consumir, el spec Open Responses (POST /v1/responses) y exponer
+    un agente conversacional confiable sobre mi propio CV — sin alucinar fechas, empleadores ni
+    cifras, y sobreviviendo intentos de inyección de prompt.
+  approach: >
+    El CV completo vive en el system prompt con prompt caching, no en una base vectorial — a esta
+    escala una base vectorial añade complejidad sin mejorar recall. Las preguntas de "cuántos años
+    con X" nunca las calcula el modelo: siempre pasan por una herramienta determinista sobre la
+    unión de intervalos reales. La narrativa larga (historia profesional, forma de trabajar) queda
+    en búsqueda híbrida (BM25 + embeddings) como respaldo, no como camino crítico. Antes de dar el
+    proyecto por bueno corrí un golden set de 50 casos con juez LLM y varias semillas, exigiendo
+    cero fallos en los casos de inyección y de preguntas fuera del corpus.
+  stack: [python, fastapi, pydantic, anthropic api, bm25, numpy, cloud run, secret manager]
+  outcome: >
+    Servicio desplegado en Cloud Run, respondiendo el spec completo con streaming SSE, tráfico
+    real de la plataforma de evaluación confirmado en producción, y cero fallos en injection y
+    fuera_de_corpus sobre el golden set.
+  links: ["https://github.com/bdjuarezh/cv-agent"]

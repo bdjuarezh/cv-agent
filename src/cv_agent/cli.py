@@ -57,7 +57,11 @@ def main() -> None:
         print('uso: python -m cv_agent.cli "tu pregunta"', file=sys.stderr)
         raise SystemExit(2)
     question = " ".join(sys.argv[1:])
-    print(asyncio.run(ask(question)))
+    answer = asyncio.run(ask(question))
+    # La consola de Windows suele quedar en cp1252, que no cubre emoji ni varios acentos —
+    # mismo bug ya visto en evals/run.py. Se escribe a stdout.buffer en UTF-8 para no tronar.
+    sys.stdout.buffer.write(answer.encode("utf-8", errors="replace"))
+    sys.stdout.buffer.write(b"\n")
 
 
 if __name__ == "__main__":

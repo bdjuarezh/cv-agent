@@ -46,7 +46,7 @@
     Elaboración de dashboards y análisis de datos en R; liderazgo de un proyecto de visión por
     computadora para extracción automática de información de partidos de fútbol a partir de
     video.
-  stack: [r, tableau, highcharts, r shiny, yolo, visión computacional]
+  stack: [python, r, tableau, highcharts, r shiny, yolo, visión computacional]
   achievements:
     - text: "Elaboré dashboards (Tableau, Highcharts, R Shiny) e implementé análisis de datos en R"
     - text: "Lideré un proyecto de visión por computadora para extracción automática de información de partidos de fútbol a partir de video, usando arquitecturas ANN de estado del arte (YOLO, segmentación de imágenes)"
@@ -60,7 +60,7 @@
   summary: >
     Divulgación de simulaciones numéricas en física e IA, y organización de hackathons
     solidarios durante la pandemia de COVID-19.
-  stack: []
+  stack: [python, julia]
   achievements:
     - text: "Impartí cursos de simulaciones numéricas en física e IA"
     - text: "Organicé hackathons para recaudación de fondos destinados a hospitales de Oaxaca durante la pandemia de COVID-19"
