@@ -117,7 +117,9 @@ El endpoint es público: cualquiera puede escribirle.
 - **Modalidades no soportadas.** Imagen, archivo y audio en el input se detectan y se rechazan
   de forma determinista antes de llamar al modelo — no es una decisión del LLM, así que la razón
   se comunica siempre igual y ninguna llamada al proveedor se gasta en algo que no se va a
-  procesar. Solo se evalúa el último turno del usuario, no todo el historial (§8).
+  procesar. Solo se evalúa el último turno del usuario, no todo el historial — la plataforma
+  reproduce el transcript completo en `input` en cada turno (§3), así que escanear todo el
+  historial dejaría un adjunto ya rechazado pegado a todas las respuestas futuras.
 
 ## 5. Evaluación
 
@@ -170,28 +172,3 @@ iterar su rúbrica — reportarlo es una señal de rigor, no un detalle opcional
 - **Streaming bufferizado, no incremental token a token.** La secuencia de eventos SSE es
   spec-válida y se cumple end to end, pero el texto se genera completo antes de emitir los
   eventos — es una mejora de latencia percibida pendiente, no de correctitud.
-
-## 8. Lo que reveló el tráfico real (encontrado y corregido)
-
-Desplegar contra la plataforma real, no solo correr `make eval` en local, sacó a la luz dos bugs
-que ningún test local hubiera atrapado:
-
-- **`.gcloudignore` excluía `data/narrative/*.md` de todo despliegue.** El patrón `*.md` sin
-  ancla a la raíz también capturaba la narrativa que el contenedor sí necesita en runtime — el
-  contenedor arrancaba sin ella, el chunking recalculado en frío no coincidía con
-  `data/chunks.json`, y `search_profile` devolvía siempre una lista vacía sin fallar visiblemente.
-  `make eval` nunca lo detectó porque corre en local, directo contra el filesystem, sin pasar por
-  `.gcloudignore`. Confirmado con tráfico real (`docs/platform-contract.md` §10b) tras el fix:
-  `search_profile` con latencia real de embeddings (~800 ms) en vez de los 0 ms sospechosos de un
-  retriever vacío.
-- **El rechazo de modalidad no soportada se pegaba a todos los turnos siguientes.** La plataforma
-  reproduce el transcript completo en `input` en cada turno (§3) — un adjunto rechazado en un
-  turno quedaba en `body.input` para siempre, y la comprobación determinista (§4) escaneaba todo
-  el historial en vez de solo el turno actual, así que el agente seguía respondiendo "modalidad no
-  soportada" en cualquier pregunta posterior. Corregido para mirar únicamente el último mensaje
-  del usuario.
-
-Ambos bugs comparten un patrón: pasaban toda prueba local (unitarias, `make eval`) y solo se
-manifestaban con el comportamiento real de la plataforma consumidora — la razón por la que este
-proyecto insiste en verificar contra tráfico real en vez de confiar solo en el entorno de
-desarrollo.
