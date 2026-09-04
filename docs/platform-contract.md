@@ -110,7 +110,7 @@ catálogo. 🔶
 ⚠️ **Ítems de `input` sin campo `type`.** Una solución aceptada documenta soporte para
 `{"role": "user", "content": "..."}` sin `type`. Nuestra unión discriminada exige `type` y
 devolvería 422. Mitigación aplicada: validador `mode="before"` que inyecta `type: "message"`
-cuando falta y hay `role`. Ver `07_SCRIPTS_Y_CONFIG.md` E.1. 🔶
+cuando falta y hay `role`. 🔶
 
 ⚠️ Los parámetros extra hacen que `extra="allow"` en `CreateResponseBody` sea obligatorio. Con
 `extra="forbid"` el agente devolvería 422 y quedaría inutilizable. Se eligió `allow` sobre `ignore`
@@ -131,8 +131,8 @@ para poder registrar qué campos manda la plataforma que no modelamos.
 `n_items: 1`, turno 2 tenía `n_items: 2` — el array `input` creció, reproduciendo el historial
 completo. `has_previous_response_id` fue `false` en ambos turnos. La plataforma **no usa
 `previous_response_id`** — usa reproducción de transcripción. El servicio es **stateless de
-facto**: `--max-instances=1` deja de ser una restricción de correctitud (D10 actualizada en
-`00_ENTREGABLES.md`), aunque se mantiene por ahora por simplicidad de despliegue.
+facto**: `--max-instances=1` deja de ser una restricción de correctitud, aunque se mantiene por
+ahora por simplicidad de despliegue.
 
 `previous_response_id` se queda implementado de todos modos: el spec lo exige, el desplegable
 podría cambiarse de opción sin avisar, y el costo de mantenerlo ya está pagado.
@@ -170,13 +170,29 @@ el formulario manualmente.
 ## 7. Prompt suggestions
 
 Hasta 8 líneas, mostradas sobre el compositor cuando se selecciona el agente. Es lo primero que
-verá y clicará un evaluador.
+verá y clicará un evaluador — cada una debe exhibir una capacidad distinta y verificable contra
+el CV real.
 
-Registradas:
+Propuestas:
 
 ```
-_(pendiente — ver 08_CONTRATO_PLATAFORMA.md §4 para las 8 propuestas)_
+¿Cuántos años llevas trabajando con RAG?
+¿Qué hacías en 2022?
+¿Tienes experiencia con modelos de crédito o riesgo financiero?
+Compara tu rol actual con el anterior
+¿Cuál es tu experiencia con infraestructura RAG y proveedores de LLM?
+¿Qué te llevó a especializarte en inteligencia artificial?
+¿Cómo tomas decisiones cuando los requisitos de un proyecto son ambiguos?
+Cuéntame del logro profesional del que estás más orgulloso
 ```
+
+Razonamiento: la primera y la segunda ejercitan `compute_years` y la resolución temporal
+determinista sobre roles consecutivos en la misma empresa — el punto técnico más fácil de fallar
+en silencio si no hay salvaguarda. La tercera es la pregunta que de verdad haría un reclutador de
+Banorte, y es un caso con matiz real (INFONAVIT no es un banco, pero sí hay modelos de crédito
+documentados — ver `evals/golden.yaml` g033). La cuarta y quinta ejercitan `get_experience` y
+`get_skills`. Las tres últimas son abiertas, grounded en la narrativa (`data/narrative/`), y
+muestran que el agente conversa en vez de solo listar el corpus.
 
 ---
 
@@ -221,7 +237,7 @@ documento en evidencia de rigor y no en una lista de suposiciones.
 | 2026-09-03 | `model` es opcional | Formulario | `model: str \| None`, sin fallar por ausencia |
 | 2026-09-03 | La plataforma inyecta parámetros extra | Formulario | `extra="allow"` + logging de `model_extra` |
 | 2026-09-03 | Estado de conversación configurable | Formulario | D10 revisada: servicio potencialmente stateless |
-| 2026-09-03 | Primera llamada real: `stream=true`, `input` como array de 1 ítem, sin `tools`, sin `previous_response_id` (primer turno), sin extras, `user_agent=Bun/1.3.14` | Log Explorer, `request_shape` | Preguntas 1, 2, 5 y 12 de §8 pasan a ✅. Confirma que streaming bufferizado (08_CONTRATO_PLATAFORMA.md §8.2) es el camino que de verdad se ejercita en producción |
+| 2026-09-03 | Primera llamada real: `stream=true`, `input` como array de 1 ítem, sin `tools`, sin `previous_response_id` (primer turno), sin extras, `user_agent=Bun/1.3.14` | Log Explorer, `request_shape` | Preguntas 1, 2, 5 y 12 de §8 pasan a ✅. Confirma que streaming bufferizado es el camino que de verdad se ejercita en producción |
 | 2026-09-03 | Import de `agent-card.json` vía A2A rechazado ("falta name o supportedInterfaces") pese a que ambos campos están presentes | UI del formulario | Se llenó el formulario a mano; queda pendiente investigar el esquema A2A exacto que espera su parser (no bloqueante, Fase 7) |
 | 2026-09-03 | Segundo mensaje, misma conversación: `n_items` pasó de 1 a 2, `has_previous_response_id` siguió en `false` | Log Explorer, `request_shape` | **`previous_response_id` no se usa — reproducción de transcript confirmada.** Preguntas 4 y 6 de §8 pasan a ✅. Servicio confirmado stateless de facto (§4) |
 | 2026-09-03 | El agente Guía de la plataforma no responde preguntas técnicas (timeout, límites, concurrencia) | Conversación directa con el Guía | Preguntas 7, 9 y 11 de §8 quedan como ❌ sin fuente — limitación conocida asumida, documentada en `ARCHITECTURE.md` con los valores conservadores propios del diseño en vez de cifras confirmadas |
@@ -308,8 +324,7 @@ solo en local.
 
 ## 11. Evidencia de una implementación aceptada
 
-Fuente: `[implementación anonimizada]`, aceptada para el mismo puesto. Ver
-`09_BENCHMARK_COMPETIDOR.md`.
+Fuente: una implementación previamente aceptada para este mismo puesto (no identificada aquí).
 
 **Cómo se usa:** estrecha las probabilidades sobre lo que la plataforma tolera. **No** establece
 el mínimo requerido, y su envío es de fecha anterior al formulario capturado, que muestra funciones
