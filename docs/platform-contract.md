@@ -1,10 +1,11 @@
 # Contrato de integración — Plataforma Reto IA Banorte
 
-**Estado:** mayormente verificado — el transporte y el manejo de estado ya están confirmados con
-tráfico real; faltan timeout, límites y concurrencia, que solo responde el agente Guía
+**Estado:** verificado de punta a punta — transporte, manejo de estado y ahora también la
+completitud del round-trip (herramientas + respuesta final) confirmados con tráfico real contra
+el despliegue final; faltan timeout, límites y concurrencia, que solo responde el agente Guía
 **Última actualización:** 2026-09-03
 **Fuentes:** formulario "Añadir un agente" (captura 2026-09-03) · spec Open Responses
-(openresponses.org) · agente Guía _(pendiente)_ · logs de producción (2 turnos reales, 2026-09-03)
+(openresponses.org) · agente Guía _(pendiente)_ · logs de producción (4 turnos reales, 2026-09-03)
 
 > Este documento es la fuente de verdad sobre cómo la plataforma llama a nuestro agente.
 > Cada afirmación lleva su origen. Las marcadas ❓ son suposiciones que **no** deben tratarse
@@ -16,6 +17,47 @@ tráfico real; faltan timeout, límites y concurrencia, que solo responde el age
 
 🔶 significa: una solución que fue aceptada para este mismo puesto se comporta así, luego la
 plataforma al menos lo tolera. **No** significa que sea el mínimo requerido ni que siga vigente.
+
+---
+
+## 0. Arquitectura del proyecto, en breve
+
+Este documento cubre el contrato con la plataforma; el porqué de cada decisión técnica está en
+**[`ARCHITECTURE.md`](../ARCHITECTURE.md)**. Resumen para orientarse sin saltar de documento:
+
+```
+Plataforma  ──POST /v1/responses──▶  cv-agent (Cloud Run)  ──Messages API──▶  Claude
+            ◀──SSE / JSON──────────         │                ◀──────────────  (API de Anthropic)
+                                             │
+                                             ├─ system prompt = CV completo (perfil, experiencia,
+                                             │  proyectos, skills) — contexto, no una base vectorial
+                                             │
+                                             └─▶ tools internas, ejecutadas server-side:
+                                                 get_experience · get_projects · get_skills ·
+                                                 get_contact · compute_years (fechas deterministas)
+                                                 search_profile (BM25 + embeddings — respaldo
+                                                 sobre la narrativa larga, no camino crítico)
+```
+
+- **Servidor, no cliente.** El reto pide *implementar* `POST /v1/responses`, no consumirlo — el
+  loop agéntico corre dentro del servicio; el cliente nunca recibe un `function_call` para
+  ejecutar él mismo (`ARCHITECTURE.md` §0).
+- **Contexto completo en vez de RAG.** El CV entero cabe cómodo en el system prompt con prompt
+  caching — a esta escala, indexar en una base vectorial añade complejidad sin mejorar recall
+  (`ARCHITECTURE.md` §1, con el argumento cuantitativo).
+- **Aritmética temporal determinista.** "¿Cuántos años con X?" nunca lo calcula el modelo —
+  siempre `compute_years` sobre la unión de intervalos reales (`knowledge/temporal.py`).
+- **`search_profile` es respaldo, no el camino crítico.** Recupera la narrativa larga
+  (`data/narrative/*.md`) bajo demanda vía BM25 + embeddings + RRF + MMR; si no hay embeddings
+  precomputados, cae a BM25 solo, sin fallar.
+- **Provider intercambiable.** `Provider` es un Protocol; en producción corre sobre la API directa
+  de Anthropic (`PROVIDER_BACKEND=anthropic_direct`) — Vertex AI queda soportado como alternativa
+  con el mismo contrato, no usada porque su cuota de chat no se aprobó a tiempo para el reto.
+- **Stateless de facto.** Confirmado con tráfico real (§4, §10) — la plataforma reproduce el
+  transcript completo en cada turno, nunca usa `previous_response_id`.
+- **Despliegue.** Cloud Run (`--allow-unauthenticated` + Bearer propio), API keys en Secret
+  Manager, service account de mínimo privilegio, sin API keys de larga vida del lado de Vertex si
+  se retoma ese backend.
 
 ---
 
@@ -183,6 +225,7 @@ documento en evidencia de rigor y no en una lista de suposiciones.
 | 2026-09-03 | Import de `agent-card.json` vía A2A rechazado ("falta name o supportedInterfaces") pese a que ambos campos están presentes | UI del formulario | Se llenó el formulario a mano; queda pendiente investigar el esquema A2A exacto que espera su parser (no bloqueante, Fase 7) |
 | 2026-09-03 | Segundo mensaje, misma conversación: `n_items` pasó de 1 a 2, `has_previous_response_id` siguió en `false` | Log Explorer, `request_shape` | **`previous_response_id` no se usa — reproducción de transcript confirmada.** Preguntas 4 y 6 de §8 pasan a ✅. Servicio confirmado stateless de facto (§4) |
 | 2026-09-03 | El agente Guía de la plataforma no responde preguntas técnicas (timeout, límites, concurrencia) | Conversación directa con el Guía | Preguntas 7, 9 y 11 de §8 quedan como ❌ sin fuente — limitación conocida asumida, documentada en `ARCHITECTURE.md` con los valores conservadores propios del diseño en vez de cifras confirmadas |
+| 2026-09-03 | Dos turnos reales contra el despliegue final (CV real, `anthropic_direct`, revisión `cv-agent-00017-7pp`): `compute_years`+`get_experience` en el turno A, `search_profile` en el turno B, ambos con `stop_reason=end_turn` y `status_code=200` | Log Explorer (`agent_iteration`, `tool_call`, `request_out`) | Confirma el round-trip completo (no solo la forma del request) contra el CV y el código finales — §10b. `n_items` 3→5 con `has_previous_response_id=false` reafirma §4 |
 
 ---
 
@@ -229,6 +272,37 @@ turnos** — la plataforma reproduce el transcript completo en `input`, no usa
 Sigue pendiente la forma exacta de `content` dentro de cada ítem (string vs. content parts) —
 `request_shape` no la loguea, y es de baja prioridad porque el parser ya acepta ambas formas.
 
+---
+
+## 10b. Round-trip completo, contra el despliegue final
+
+La captura de §10 probaba solo la *forma* del request — en ese momento la cuota de Vertex estaba
+en 0 y el agente le devolvía error a quien probara el chat. Esta captura es posterior: CV real
+cargado, `PROVIDER_BACKEND=anthropic_direct`, revisión `cv-agent-00017-7pp`. Confirma no solo la
+forma del request sino el ciclo completo — tool calls reales y respuesta final entregada.
+
+```json
+// Turno A — 2026-09-03 22:14 (hora local), request_id e82b7f3f...
+// request_shape: {"stream": true, "n_items": 3, "has_previous_response_id": false, "n_tools": 0}
+// agent_iteration 1: stop_reason=tool_use, tool_calls=[compute_years, get_experience]
+// tool_call compute_years: ok=true (0.1ms)
+// tool_call get_experience: ok=true (0.1ms)
+// agent_iteration 2: stop_reason=end_turn, tool_calls=[]
+// request_out: status_code=200
+
+// Turno B — 2026-09-03 22:16 (hora local), misma conversación, request_id 325a24c5...
+// request_shape: {"stream": true, "n_items": 5, "has_previous_response_id": false, "n_tools": 0}
+// agent_iteration 1: stop_reason=tool_use, tool_calls=[search_profile]
+// tool_call search_profile: ok=true
+// agent_iteration 2: stop_reason=end_turn, tool_calls=[]
+// request_out: status_code=200
+```
+
+`n_items` volvió a crecer entre turnos (3→5) con `has_previous_response_id` en `false` los dos —
+confirma otra vez el patrón de §4/§10 (reproducción de transcript), ahora contra el CV real. El
+uso de `compute_years`, `get_experience` y `search_profile` en la misma sesión confirma que las
+tres rutas de datos (estructurada, determinista y de respaldo/RAG) funcionan en producción, no
+solo en local.
 
 ---
 
