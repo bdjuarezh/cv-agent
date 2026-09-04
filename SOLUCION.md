@@ -1,80 +1,79 @@
 # Solución técnica — cv-agent
 
-Documento de referencia técnica exhaustivo sobre el estado final del proyecto: qué implementa,
-cómo está construido cada componente, qué decisiones se tomaron y por qué, y qué problemas reales
-aparecieron y cómo se resolvieron. Complementa a `README.md` (guía rápida) y `ARCHITECTURE.md`
-(decisiones y su razonamiento) con el nivel de detalle de implementación que esos dos documentos
-dejan fuera a propósito.
+Este documento describe en profundidad el estado final del proyecto: qué implementa, cómo está
+construido cada componente, y qué problemas reales aparecieron durante el desarrollo y cómo se
+resolvieron. `README.md` es la guía rápida y `ARCHITECTURE.md` cubre las decisiones y su
+razonamiento; aquí entra el nivel de detalle de implementación que esos dos dejan fuera a
+propósito.
 
 ---
 
 ## 1. Resumen ejecutivo
 
-`cv-agent` es un servicio HTTP que **implementa** (no consume) el spec
-[Open Responses](https://www.openresponses.org/) — `POST /v1/responses` — y expone, a través de
-ese contrato, un agente conversacional sobre un CV real: experiencia laboral, proyectos,
-habilidades, contacto y una narrativa profesional. El objetivo del reto era construir un agente
-confiable, no solo uno que "suene bien": cada afirmación factual debe rastrearse a un dato o a una
-herramienta, la aritmética de fechas es 100% determinista, y el sistema se validó con un golden
-set real contra el proveedor de producción, no solo con pruebas unitarias.
+`cv-agent` es un servicio HTTP que implementa el spec Open Responses (`POST /v1/responses`) y
+expone, a través de ese contrato, un agente conversacional sobre un CV real: experiencia laboral,
+proyectos, habilidades, contacto y una narrativa profesional. El reto pedía construir el lado del
+servidor del spec, no consumirlo desde un cliente, y el objetivo detrás de cada decisión fue la
+confiabilidad: toda afirmación factual se puede rastrear a un dato o a una herramienta, la
+aritmética de fechas es determinista en vez de dejársela al modelo, y el sistema se validó con un
+golden set contra el proveedor real, no solo con pruebas unitarias.
 
-Modelo: Claude, vía la API directa de Anthropic. Despliegue: Cloud Run. Retrieval: BM25 + denso en
-NumPy, sin base vectorial gestionada. Estado: `TTLCache` en memoria, aunque el cliente real
-observado no lo necesita (ver §11).
+El modelo es Claude, servido por la API directa de Anthropic. El servicio corre en Cloud Run. Sobre
+la narrativa larga corre un pipeline propio de RAG (retrieval-augmented generation): BM25 más
+búsqueda densa, fusionados por RRF y reordenados por MMR, sobre una base vectorial local y
+autogestionada con NumPy en vez de un servicio gestionado de terceros (decisión justificada por la
+escala del corpus, no por evitar RAG; sección 6). El estado conversacional vive en un `TTLCache` en
+memoria, aunque el cliente real que se observó en producción termina sin necesitarlo (sección 12).
 
 ---
 
 ## 2. El contrato: spec Open Responses
 
-### 2.1 Transporte
+### Transporte
 
-| Aspecto | Valor |
-|---|---|
-| Método / ruta | `POST /v1/responses` y `POST /responses` (montado en ambos prefijos — la ruta exacta que registra un cliente no siempre incluye `/v1`) |
-| Auth | `Authorization: Bearer <API_KEY>`, comparación con `hmac.compare_digest` (no `==`, para no filtrar el token por análisis de tiempos de respuesta) |
-| `Content-Type` | `application/json` |
-| Descubrimiento | `GET /.well-known/agent-card.json` (A2A, estático, sin auth) |
+El endpoint responde en `POST /v1/responses` y también en `POST /responses`, montado en ambos
+prefijos porque la ruta que registra un cliente no siempre incluye el `/v1`. La autenticación es
+un `Authorization: Bearer <API_KEY>`, comparado con `hmac.compare_digest` (no `==`, para no
+filtrar el token por análisis de tiempos de respuesta). El descubrimiento del agente se hace vía
+`GET /.well-known/agent-card.json`, un archivo estático sin autenticación.
 
-### 2.2 Request (`CreateResponseBody`, `src/cv_agent/schemas/requests.py`)
+### El request
 
-Estricto al **emitir**, permisivo al **aceptar**:
+`CreateResponseBody` sigue la regla de ser estricto al emitir y permisivo al aceptar. El body raíz
+permite campos extra sin fallar (`extra="allow"`) y los loguea, así queda evidencia real de qué
+manda la plataforma en vez de tener que adivinarlo. El campo `input` acepta tanto una cadena
+simple como el array de ítems del spec, modelado como una unión discriminada por `type`: mensajes
+(con sub-unión por `role`), llamadas a función, resultados de función, razonamiento, referencias a
+ítems previos, y compactación.
 
-- `model_config = ConfigDict(extra="allow")` en el body raíz — un campo desconocido que mande el
-  cliente nunca tira un 422. Los campos extra se loguean (`request_shape`, evento
-  `extra_keys`) para tener evidencia real de qué manda la plataforma, en vez de adivinar.
-- `input: str | list[InputItem]` — acepta tanto una cadena simple como el array de ítems del spec.
-  `InputItem` es una unión discriminada por `type`: `message` (con sub-unión por `role`:
-  `user`/`system`/`developer`/`assistant`), `function_call`, `function_call_output`, `reasoning`,
-  `item_reference`, `compaction`.
-- **Validador `mode="before"` que inyecta `type: "message"`** cuando un ítem trae `role` pero no
-  `type` — una implementación aceptada para este mismo puesto documentaba soporte para
-  `{"role": "user", "content": "..."}` sin `type`; sin este default, la unión discriminada
-  devolvería 422 y el agente quedaría inutilizable ante ese cliente.
-- Content parts de un mensaje de usuario: `input_text`, `input_image`, `input_file`,
-  `input_audio` — las tres últimas se **aceptan** (nunca 422) pero se **rechazan de forma
-  determinista** antes de tocar al modelo (§10.3).
-- `metadata`: hasta 16 pares clave/valor (validado con un `model_validator(mode="after")`).
+Un validador que corre antes de la validación normal le inyecta `type: "message"` a un ítem que
+trae `role` pero no `type` (una implementación aceptada para este mismo puesto documentaba soporte
+para mensajes sin ese campo; sin el default, la unión discriminada devolvería un 422 y dejaría el
+agente inutilizable frente a ese cliente).
 
-### 2.3 Response (`src/cv_agent/schemas/responses.py`)
+Las content parts de un mensaje de usuario incluyen `input_text`, `input_image`, `input_file` e
+`input_audio`. Las últimas tres se aceptan sin problema a nivel de esquema, pero se rechazan más
+adelante, antes de que el modelo llegue a verlas (sección 11).
 
-**Todos** los campos `required` del spec están siempre presentes, aunque sean `null` — un cliente
-estricto que valide contra el OpenAPI real de openresponses.org falla por una llave faltante,
-nunca por una de más. `REQUIRED_FIELDS` en el módulo es literalmente el conjunto de 30 llaves que
-se verificó contra ese OpenAPI.
+### La respuesta
 
-### 2.4 Streaming (SSE)
+`Response` siempre incluye todos los campos que el spec marca como required, aunque su valor sea
+`null` (un cliente que valide estrictamente contra el OpenAPI de openresponses.org falla por una
+llave faltante, nunca por una de más). El módulo declara literalmente el conjunto de treinta
+llaves que se verificaron contra ese OpenAPI.
 
-`EventStream` (`src/cv_agent/api/sse.py`) — cada evento: `event: {type}\ndata: {json}\n\n`, con
-`sequence_number` monótonamente creciente y sin `id:` (así lo pide el spec). Secuencia real emitida
-por turno:
+### Streaming
+
+Cada evento SSE tiene la forma `event: {type}\ndata: {json}\n\n`, con un número de secuencia
+creciente y sin `id:`, como pide el spec. La secuencia real que se emite en un turno es:
 
 ```
 response.created
 response.in_progress
-cv_agent.tool_call × N        ← evento propio, namespaced, fuera del spec (ver nota abajo)
+cv_agent.tool_call × N        ← evento propio, fuera del spec
 response.output_item.added
 response.content_part.added
-response.output_text.delta    ← el texto completo en un solo delta
+response.output_text.delta    ← el texto completo llega en un solo delta
 response.output_text.done
 response.content_part.done
 response.output_item.done
@@ -82,72 +81,72 @@ response.completed
 data: [DONE]
 ```
 
-**Streaming bufferizado, no incremental.** La secuencia de eventos es spec-válida de punta a
-punta, pero el texto se genera completo (esperando a que termine el loop agéntico, incluyendo
-tool-use) antes de emitirla — es una mejora de latencia percibida pendiente, no de correctitud.
-Emitir deltas reales token a token con tool-use intercalado requeriría que el loop agéntico
-soportara streaming real del proveedor, que hoy no lo hace.
+El streaming está bufferizado: la secuencia de eventos cumple el spec de punta a punta, pero el
+texto se genera completo (incluyendo cualquier llamada a herramienta en el camino) antes de emitir
+nada. Streaming incremental real, token por token con tool-use intercalado, requeriría que el loop
+agéntico soportara streaming del proveedor (pendiente, mejora de latencia percibida, no de
+correctitud).
 
-`cv_agent.tool_call` es un evento **fuera del spec**, deliberadamente namespaced con el prefijo
-`cv_agent.` para que ningún cliente lo confunda con un evento real de Open Responses. Existe solo
-para que `web/index.html` pueda mostrar en vivo qué herramienta se ejecutó — las herramientas son
-*internally-hosted* (el spec no las expone al cliente), así que sin este evento un demo en vivo se
-vería "pensando" sin explicar por qué.
+`cv_agent.tool_call` es un evento que no pertenece al spec (prefijo propio, para que ningún
+cliente lo confunda con un evento real de Open Responses). Sirve solo para que la demo en
+`web/index.html` muestre en vivo qué herramienta se está ejecutando, ya que las herramientas
+corren del lado del servidor y el spec no las expone al cliente.
 
-### 2.5 `previous_response_id` y estado conversacional
+### Estado conversacional y `previous_response_id`
 
-El spec lo exige: el modelo debería muestrear sobre `prev.input → prev.output → input`,
-preservando ese orden. Implementado con `ResponseStore` (`state/response_store.py`), un `Protocol`
-con una única implementación real (`TTLCacheStore` sobre `cachetools.TTLCache`, TTL configurable
-por `STATE_TTL_SECONDS`, default 3600s).
+El spec espera que el modelo muestree sobre el historial previo más el nuevo input, preservando
+ese orden. Está implementado con un `ResponseStore` sobre `cachetools.TTLCache` (TTL configurable,
+una hora por defecto).
 
-**Hallazgo real, verificado con tráfico de producción** (no supuesto): la plataforma que consume
-este endpoint reproduce el historial completo en `input` en cada turno y **nunca** manda
-`previous_response_id`. Se confirmó viendo crecer `n_items` del campo `input` entre dos turnos de
-la misma conversación mientras `has_previous_response_id` seguía en `false` en ambos. Eso hace el
-servicio **stateless de facto** para ese cliente — la limitación de una sola réplica
-(`--max-instances=1`, porque el estado vive en memoria del proceso) deja de ser una restricción de
-correctitud para él, aunque sigue siendo el límite de diseño si algún cliente distinto sí
-dependiera de `previous_response_id`. La lógica se mantiene implementada de todos modos: el spec
-la exige, el costo de mantenerla ya está pagado, y el comportamiento de la plataforma podría
-cambiar sin avisar.
+El hallazgo real, verificado con tráfico de producción, es que la plataforma que consume este
+endpoint reproduce el historial completo en `input` en cada turno y nunca manda
+`previous_response_id`: se confirmó viendo crecer el número de ítems del campo `input` entre dos
+turnos de la misma conversación mientras `has_previous_response_id` se mantenía en `false` los dos
+turnos. Eso hace que el servicio sea, en la práctica, stateless para ese cliente (la restricción de
+correr con una sola réplica, necesaria mientras el estado viva en memoria de proceso, deja de
+importar para la corrección de las respuestas, aunque sigue siendo el límite de diseño si algún día
+un cliente distinto sí depende de ese campo). La lógica de `previous_response_id` se mantiene
+implementada de todos modos (el spec la exige y el costo de tenerla ya está pagado).
 
 ---
 
-## 3. Arquitectura, en detalle
+## 3. Arquitectura
 
 ```
 Plataforma  ──POST /v1/responses──▶  cv-agent (Cloud Run)  ──Messages API──▶  Claude
             ◀──SSE / JSON──────────         │                ◀──────────────  (API de Anthropic)
                                              │
                                              ├─ system prompt = CV completo (perfil, experiencia,
-                                             │  proyectos, skills) — contexto, no una base vectorial
+                                             │  proyectos, skills), directo en el contexto
                                              │
                                              └─▶ tools internas, ejecutadas server-side:
                                                  get_experience · get_projects · get_skills ·
                                                  get_contact · compute_years (fechas deterministas)
-                                                 search_profile (BM25 + embeddings — respaldo
-                                                 sobre la narrativa larga, no camino crítico)
+                                                 search_profile (RAG: BM25 + embeddings, RRF y
+                                                 MMR sobre la narrativa larga)
 ```
 
-### 3.1 Decisión central: contexto completo, no RAG vectorial
+### Contexto completo para el CV estructurado, complementado con RAG (base vectorial local)
 
-El corpus curado (perfil + experiencia + proyectos + skills) vive **completo** en el system prompt,
-marcado con `cache_control` para prompt caching. El argumento no es de intuición sino cuantitativo
-(desarrollado con detalle en `ARCHITECTURE.md` §1):
+El corpus curado (perfil, experiencia, proyectos y skills) vive completo en el system prompt,
+marcado para prompt caching, y la narrativa larga se cubre con el pipeline de RAG de
+`search_profile` (sección 6). Con $R$ = "el fragmento correcto está en lo recuperado":
 
-- **Precisión.** Con contexto completo, la probabilidad de que el fragmento con la respuesta esté
-  disponible es 1 por construcción. Con top-*k* siempre es menor a 1 — RAG solo puede *perder*
-  exactitud frente a contexto completo a esta escala.
-- **Costo.** Con prompt caching (escritura ≈1.25×, lectura ≈0.10× el costo base), desde la
-  **segunda** llamada dentro del TTL de caché ya es más barato que no cachear. En una conversación
-  de 6 turnos, el ahorro es ≈82% del costo de input.
-- **Sin base vectorial gestionada.** Con *n*≈200 chunks, una búsqueda exacta es un producto
-  matriz-vector de microsegundos en NumPy. Una base vectorial gestionada añade ~30ms de latencia
-  de red, un punto de falla y una dependencia externa a cambio de nada — el cruce donde ANN
-  (HNSW/IVF) empieza a pagar está tres órdenes de magnitud arriba de este corpus.
+$$P(\text{correcto}) = P(\text{correcto}\mid R)\,P(R) + P(\text{correcto}\mid \neg R)\,P(\neg R)$$
 
-### 3.2 Árbol de módulos
+Para el corpus estructurado, contexto completo da $P(R)=1$ por construcción, mientras que
+cualquier top-$k$ da $P(R)<1$; es la razón de mandarlo directo en vez de recuperarlo. En costo, con
+prompt caching (escritura
+$\approx 1.25C$, lectura $\approx 0.10C$ del tamaño del corpus $C$), el ahorro sobre $m$ llamadas
+dentro del TTL es:
+
+$$\text{ahorro} = 1 - \frac{1.25C + 0.10C\,(m-1)}{C\cdot m}$$
+
+que para $m=6$ turnos da $\approx 82\%$ de input. Con $n\approx 200$ chunks, una búsqueda exacta
+es $O(nd)\approx 1.5\times 10^5$ FLOPs ($\sim$50 μs en NumPy); un índice aproximado (HNSW/IVF)
+solo empieza a pagar en $n\gtrsim 10^5$, tres órdenes de magnitud arriba de este corpus.
+
+### Árbol de módulos
 
 ```
 src/cv_agent/
@@ -163,28 +162,28 @@ src/cv_agent/
 │   ├── sse.py                  # construcción de eventos SSE
 │   └── errors.py               # envelope de error del spec, handlers globales
 ├── agent/
-│   ├── loop.py                # el loop agéntico (§4)
-│   ├── prompts.py               # construcción del system prompt (§6)
-│   ├── tools.py                  # schemas + dispatch de las 6 herramientas (§5)
+│   ├── loop.py                # el loop agéntico
+│   ├── prompts.py               # construcción del system prompt
+│   ├── tools.py                  # schemas + dispatch de las herramientas
 │   └── guardrails.py               # heurística barata de inyección sobre el input crudo
 ├── knowledge/
 │   ├── models.py                    # Pydantic: Profile, Experience, Project, Skill, etc.
 │   ├── store.py                      # KnowledgeStore — índice en memoria con queries filtradas
-│   ├── temporal.py                    # aritmética de fechas determinista (§5.1)
+│   ├── temporal.py                    # aritmética de fechas determinista
 │   ├── chunking.py                     # trocea data/narrative/*.md por encabezado
-│   └── retrieval/local.py               # BM25 + denso + RRF + MMR (§5.2)
+│   └── retrieval/local.py               # BM25 + denso + RRF + MMR
 ├── providers/
 │   ├── base.py                    # Protocol Provider, Message/ToolCall/Usage/ProviderResult
 │   ├── anthropic_messages.py       # lógica compartida Anthropic (traducción de mensajes, retry)
 │   ├── anthropic_direct.py          # producción — API key propia
-│   ├── vertex_anthropic.py           # alternativa — auth IAM, no usada (§8.3)
+│   ├── vertex_anthropic.py           # alternativa — auth IAM, no usada en producción
 │   ├── factory.py                     # decide qué Provider construir según config
 │   ├── embeddings.py                   # Vertex Embeddings, para search_profile
 │   └── fake.py                          # FakeProvider — guionizable, usado en todos los tests
 ├── schemas/
-│   ├── requests.py                 # CreateResponseBody y sub-modelos (§2.2)
-│   └── responses.py                  # Response y sub-modelos (§2.3)
-├── state/response_store.py         # previous_response_id -> TTLCache (§2.5)
+│   ├── requests.py                 # CreateResponseBody y sub-modelos
+│   └── responses.py                  # Response y sub-modelos
+├── state/response_store.py         # previous_response_id -> TTLCache
 ├── obs/
 │   ├── logging.py                    # structlog JSON
 │   └── metrics.py                     # contadores en memoria, expuestos en /metrics
@@ -194,375 +193,332 @@ src/cv_agent/
 
 ---
 
-## 4. El loop agéntico (`agent/loop.py`)
+## 4. El loop agéntico
 
-```python
-async def run(provider, system, messages, ctx, *, max_iterations=6, instructions="", max_output_tokens=None) -> LoopResult
-```
+`agent/loop.py` expone una sola función, `run`, que recibe el proveedor, el system prompt, el
+historial de mensajes y el contexto de herramientas, y devuelve un `LoopResult` con el texto
+final, el historial completo, cuántas iteraciones tomó, y el uso de tokens acumulado.
 
-Por cada iteración (hasta `max_iterations`, default 6, `MAX_LOOP_ITERATIONS`):
+En cada iteración (hasta un máximo configurable, seis por defecto) se llama al proveedor con el
+historial actual y las herramientas disponibles. Si la respuesta no trae llamadas a herramientas,
+el turno terminó: se agrega el mensaje del asistente al historial y se devuelve. Si sí las trae,
+se agregan todas al historial, se ejecutan en paralelo con `asyncio.gather`, y cada resultado se
+agrega como un mensaje de rol `tool` correlacionado por su id de llamada; la siguiente iteración
+vuelve a llamar al proveedor con ese historial extendido. El uso de tokens se acumula a lo largo
+de todas las iteraciones, así que lo reportado al final es el costo real del turno completo, no
+solo de la última llamada.
 
-1. Llama a `provider.complete(system, history, TOOL_SCHEMAS, instructions=..., max_output_tokens=...)`.
-2. Acumula `usage` (input/output/cached tokens) a través de **todas** las iteraciones — el `usage`
-   final reportado es el del turno completo, no solo la última llamada.
-3. Si `result.tool_calls` está vacío → el turno terminó (`stop_reason` real del proveedor, casi
-   siempre `end_turn`); se agrega el mensaje del asistente al historial y se devuelve.
-4. Si hay tool calls → se agregan al historial como un mensaje de asistente con `tool_calls`, se
-   ejecutan **todas en paralelo** con `asyncio.gather`, y cada resultado se agrega como un mensaje
-   de rol `tool` correlacionado por `tool_call_id`. La siguiente iteración vuelve a llamar al
-   proveedor con el historial extendido.
-
-Si se agotan las `max_iterations` sin `end_turn`, se devuelve un mensaje degradado
-(`DEGRADED_MESSAGE`) con lo último que el modelo alcanzó a decir, en vez de fallar o devolver un
-turno vacío — el cliente siempre recibe algo útil.
-
-Cada herramienta se ejecuta dentro de un `try/except` propio (`_run_tool`): una excepción nunca se
-propaga como error HTTP — se convierte en un string de error que vuelve **al modelo** como
-resultado de la tool, para que decida cómo comunicarlo (o reintentar con otra herramienta), y se
-loguea (`tool_call`, con `ok=False` y la duración).
+Si se agotan las iteraciones sin que el modelo termine el turno, se devuelve un mensaje que
+explica que no se pudo completar la respuesta y comparte lo último que el modelo alcanzó a decir
+(en vez de fallar o devolver algo vacío). Cada ejecución de herramienta está envuelta en su propio
+manejo de errores: si algo truena, el error se convierte en texto y se le devuelve al modelo como
+resultado de esa herramienta, en vez de propagarse como un error HTTP.
 
 ---
 
-## 5. Las herramientas (`agent/tools.py`)
+## 5. Las herramientas
 
-Seis herramientas, todas ejecutadas server-side dentro del loop — el cliente nunca ve un
-`function_call` pendiente de ejecutar él mismo (consecuencia directa del §0 de `ARCHITECTURE.md`:
-el reto pide *implementar* el servidor, no ser cliente).
+Hay seis, todas ejecutadas del lado del servidor dentro del loop (el cliente nunca recibe una
+llamada a función pendiente de ejecutar él mismo, porque el reto pide implementar el servidor, no
+actuar como cliente).
 
-| Herramienta | Qué hace | Sync/Async |
-|---|---|---|
-| `get_experience` | Roles laborales, filtrables por `company`, `stack`, `from_year`, `to_year` | sync |
-| `get_projects` | Proyectos, filtrables por `tech`, `year`, `limit` | sync |
-| `get_skills` | Habilidades, filtrables por `category`, `min_level` (1-5) | sync |
-| `get_contact` | Solo canales con `public: true` — nunca devuelve uno marcado privado | sync |
-| `compute_years` | Años de experiencia con una tecnología, determinista (§5.1) | sync |
-| `search_profile` | Búsqueda híbrida sobre la narrativa larga, respaldo (§5.2) | **async** |
+| Herramienta | Qué hace |
+|---|---|
+| `get_experience` | Roles laborales, filtrables por empresa, tecnología o rango de años |
+| `get_projects` | Proyectos, filtrables por tecnología, año o con un límite de resultados |
+| `get_skills` | Habilidades, filtrables por categoría o nivel mínimo |
+| `get_contact` | Solo devuelve los canales marcados como públicos |
+| `compute_years` | Años de experiencia con una tecnología, calculados de forma determinista |
+| `search_profile` | Búsqueda híbrida sobre la narrativa larga, como respaldo |
 
-`execute_tool` hace el dispatch por nombre y serializa el resultado a JSON (`ensure_ascii=False`,
-así los acentos van literales, no como `\uXXXX`). Todas las funciones son síncronas salvo
-`search_profile`, que llama a Vertex Embeddings vía threadpool.
+Todas son funciones síncronas salvo `search_profile`, que llama a Vertex Embeddings a través de un
+threadpool. El resultado de cada una se serializa a JSON con los acentos escritos literalmente en
+vez de como secuencias de escape.
 
-### 5.1 `compute_years` — aritmética de fechas 100% determinista
+### `compute_years`: aritmética de fechas determinista
 
-*"¿Cuántos años de experiencia tienes en X?"* es la pregunta con más probabilidad de responderse
-mal, porque un LLM tiende a **sumar** los intervalos en vez de calcular su unión — si dos roles se
-traslapan usando la misma tecnología, sumarlos duplica el conteo. `knowledge/temporal.py`
-implementa la solución correcta con un sweep-line:
+La pregunta "¿cuántos años de experiencia tienes en X?" es probablemente la que más fácil se
+responde mal, porque un modelo de lenguaje tiende a sumar los intervalos en vez de calcular su
+unión: si dos roles se traslapan usando la misma tecnología, sumarlos duplica ese periodo. Con
+$[s_i,e_i]$ los periodos donde aparece la tecnología $X$:
 
-```python
-def merge_intervals(spans):        # ordena por inicio, fusiona solapados/adyacentes — O(n log n)
-def total_years(spans):            # suma la duración de los intervalos YA fusionados
-def years_with_skill(skill, experiences, projects, *, today=None):
-    # une los spans de experiencias y proyectos donde `skill` aparece en `stack`,
-    # comparando en minúsculas, y llama a total_years sobre la unión
-```
+$$T(X) = \left|\bigcup_i [s_i,e_i]\right|$$
 
-Un proyecto solo trae `year` (no un rango) — se trata como el año calendario completo
-(1 ene–31 dic), una aproximación razonable para un dato de grano anual. La fecha "hoy" para roles
-sin `end` (`end: null`) es `date.today()` real del sistema, no una constante.
+Se calcula con un sweep-line (ordenar por $s_i$, fusionar solapados o adyacentes, sumar
+duraciones), $O(n\log n)$. Un proyecto en el CV solo trae un año, no un rango, así que se trata
+como el año calendario completo (una simplificación razonable para un dato con esa granularidad).
+La fecha de "hoy" para roles sin fecha de fin es la fecha real del sistema, y la comparación del
+nombre de la tecnología ignora mayúsculas (el stack de cada experiencia se declara en minúsculas,
+mientras que el modelo suele nombrar la tecnología tal como aparece en la lista de habilidades).
 
-**Bug real encontrado y corregido:** la comparación de `skill` era sensible a mayúsculas —
-`skills.yaml` declara `"Python"` (nombre propio) mientras que `stack` en `experience.yaml` usa
-minúsculas por convención (`[python, ...]`). El modelo naturalmente llama a la tool con el nombre
-tal como aparece en skills, así que `compute_years("Python")` devolvía **0 años** en silencio —
-sin lanzar excepción, el peor tipo de fallo para una herramienta que existe justo para ser
-confiable. Corregido comparando ambos lados en minúsculas
-(`skill.lower() in {s.lower() for s in exp.stack}`), con test de regresión
-(`tests/test_temporal.py`).
+### `search_profile`: retrieval híbrido como respaldo
 
-### 5.2 `search_profile` — retrieval híbrido, respaldo no crítico
+El pipeline en `knowledge/retrieval/local.py` combina BM25 sobre el texto crudo de cada fragmento
+(siempre disponible, sin depender de ningún servicio externo, y particularmente útil para nombres
+de empresa, siglas y tecnologías) con una búsqueda densa opcional cuando hay un modelo de
+embeddings de Vertex configurado. Los dos rankings se combinan y se reordenan antes de devolver
+los resultados finales; el mecanismo exacto se explica en la siguiente sección. Si no hay embedder
+configurado, el paso denso se omite y se devuelven los primeros resultados de BM25 (el retriever
+nunca falla, en el peor caso solo pierde algo de recall).
 
-Pipeline en `knowledge/retrieval/local.py` (`LocalRetriever`):
-
-1. **BM25** (`bm25s`) sobre el texto crudo de cada chunk — siempre disponible, sin dependencias
-   externas. Importa más de lo que parece: nombres de empresa, siglas y stacks técnicos son
-   tokens de IDF alto que un embedding denso tiende a diluir.
-2. **Denso** (opcional): si hay `VertexEmbeddings` configurado, cada chunk tiene un embedding
-   precomputado (`data/embeddings.npy`, filas L2-normalizadas — así `embeddings @ query_vec` es
-   directamente coseno) y la query se embebe en el momento (`embed_query`, cacheada con
-   `lru_cache` por texto exacto de query).
-3. **Fusión por Reciprocal Rank Fusion** (K=60): no se suman puntajes de escalas incomparables
-   (BM25 no está en la misma escala que similitud coseno) — se fusionan **rangos**.
-4. **Reordenado por MMR** (λ=0.7) sobre los primeros 30 candidatos fusionados, para no
-   desperdiciar los *k* resultados finales con chunks casi idénticos.
-
-Si no hay embedder configurado, el paso 2-3 se omite entero y se devuelven directamente los
-primeros *k* resultados de BM25 — **nunca falla**, solo degrada el recall.
-
-`data/embeddings.npy` + `data/chunks.json` se precomputan con `make kb` (`scripts/build_kb.py`) y
-se commitean, para no recalcular ni llamar a Vertex en cada arranque. Al iniciar, el retriever
-recalcula `chunk_narrative()` sobre el `data/narrative/` real y compara los `chunk_id` contra los
-del `chunks.json` cacheado — si no coinciden, loguea `embeddings_stale` y **cae a BM25 solo** en
-vez de servir embeddings desalineados con el contenido actual (`_load_precomputed_embeddings`).
-
-**Bug real encontrado y corregido en producción** (no local): `.gcloudignore` tenía el patrón
-`*.md` sin ancla a la raíz, así que también excluía `data/narrative/*.md` de **todo** el código
-fuente subido a Cloud Build — el contenedor arrancaba sin la narrativa, el chunking recalculado en
-frío daba una lista vacía, no coincidía con `chunks.json`, y `search_profile` devolvía siempre `[]`
-sin lanzar ningún error visible. `make eval` nunca lo detectó porque corre en local, directo
-contra el filesystem, sin pasar por `.gcloudignore` — el bug solo se manifestaba en producción.
-Corregido anclando el patrón a la raíz (`/*.md`); verificado después con latencia real de
-embeddings (~800 ms, contra los ~0 ms sospechosos de un retriever vacío) en tráfico real de la
-plataforma.
+Los embeddings y los fragmentos se precomputan con `make kb` y se guardan en el repositorio, para
+no recalcularlos ni llamar a Vertex en cada arranque. Al iniciar, el retriever vuelve a trocear la
+narrativa actual y compara esos fragmentos contra los ya guardados; si no coinciden, asume que el
+índice quedó desactualizado y cae a BM25 solo, en vez de servir embeddings que ya no corresponden
+al contenido real.
 
 ---
 
-## 6. El system prompt (`agent/prompts.py`)
+## 6. Por qué esto sí es RAG
 
-Se construye una sola vez en el lifespan (`build_system_prompt`) y se manda completo en cada
-llamada como el único bloque `system`, marcado con `cache_control: {"type": "ephemeral"}` — el
-orden interno de los bloques no afecta el cacheo, todo el prefijo se cachea en cuanto es idéntico
-entre llamadas. Cuatro bloques de reglas, en orden fijo, seguidos del corpus completo:
+`search_profile` es un pipeline real de RAG (retrieval-augmented generation): búsqueda léxica y
+densa, fusión de rankings, reordenado por diversidad, construido a mano sobre NumPy con una base
+vectorial local. Recupera pasajes relevantes de la narrativa larga y se los entrega al modelo como
+contexto antes de generar la respuesta, complementando al corpus estructurado del CV, que va
+directo al contexto porque a esa escala no hace falta recuperarlo.
 
-1. **`IDENTITY`** — quién es el agente y en qué persona gramatical habla. **El agente habla en
-   tercera persona**, como quien presenta y comenta el perfil ("Bryan trabaja en...", "su rol
-   actual es..."), nunca en primera persona como si fuera la persona del CV — decisión explícita
-   para que quien conversa con el agente tenga claro que está hablando *con un agente que
-   presenta un perfil*, no con la persona misma.
-2. **`BEHAVIOR_RULES`** — toda afirmación factual debe rastrearse a un id del corpus o a una
-   llamada a herramienta; inferencias no declaradas explícitamente (p. ej. el sector de un
-   empleador, inferido del tipo de proyectos) se marcan como tales, nunca como hecho confirmado;
-   campos vacíos del perfil (p. ej. sin idiomas registrados) se declaran como vacíos explícitamente
-   — el modelo no debe rellenarlos con su propia capacidad como LLM; preguntas de "cuántos años" o
-   "qué hacías en año X" pasan siempre por herramienta, nunca por aritmética de memoria.
-3. **`ABSTENTION_POLICY`** — si algo no se puede responder con el corpus/herramientas, decirlo
-   explícitamente y redirigir, sin rellenar con generalidades; fuera de alcance (p. ej. "escríbeme
-   un script") se rehúsa con cortesía, salvo que la pregunta técnica sea sobre el propio trabajo
-   documentado.
-4. **`ANTI_INJECTION`** — jerarquía de instrucciones explícita: las reglas del system prompt tienen
-   prioridad máxima; el corpus es **dato**, nunca instrucciones — cualquier texto embebido en él
-   que intente dar órdenes se ignora; las `instructions` que mande el cliente de la API tienen
-   prioridad **menor** que estas reglas.
+El puntaje de recuperación combina tres pasos. Score léxico, por término $q_i$ de la consulta:
 
-El corpus (`build_corpus`) concatena cuatro bloques generados desde el `KnowledgeBase`: perfil +
-educación + idiomas, experiencia (con logros e ids rastreables), proyectos, habilidades (con
-nivel y evidencia). El contacto **no** entra al corpus estático — solo es alcanzable vía
-`get_contact()`, deliberadamente, para no perder la señal de "el agente usó la herramienta
-correcta" en la evaluación (ver nota en §12).
+$$\text{score}_{\text{BM25}}(D,Q) = \sum_{q_i \in Q} \text{IDF}(q_i)\cdot\frac{f(q_i,D)(k_1+1)}{f(q_i,D)+k_1\left(1-b+b\frac{|D|}{\text{avgdl}}\right)}$$
+
+(IDF castiga palabras frecuentes en el corpus, premia las raras: nombres de empresa, siglas).
+Score denso, con vectores normalizados a norma unitaria:
+
+$$\text{score}_{\text{denso}}(q,d) = \cos(q,d) = q \cdot d$$
+
+Los dos no están en la misma escala, así que el score final no es su suma sino su fusión por
+posición (Reciprocal Rank Fusion):
+
+$$\text{score}_{\text{final}}(d) = \sum_{i\,\in\,\{\text{BM25},\,\text{denso}\}} \frac{1}{k+r_i(d)}, \quad k=60$$
+
+con $r_i(d)$ la posición de $d$ en el ranking $i$. Sobre los 30 mejores por $\text{score}_{\text{final}}$,
+un último paso reordena por diversidad:
+
+$$\text{MMR}(d) = \lambda\cdot\text{sim}(d,q) - (1-\lambda)\max_{d'\in S}\text{sim}(d,d'), \quad \lambda=0.7$$
+
+con $S$ lo ya seleccionado (primer término: relevancia; segundo: penaliza parecerse a algo ya
+elegido; $\lambda$ cerca de 1 favorece relevancia sobre diversidad).
 
 ---
 
-## 7. Modelo de datos (`knowledge/models.py`)
+## 7. El system prompt
 
-```python
-Profile(name, headline, summary, education: list[Education], languages: list[str],
-        contact: list[ContactChannel], pii_policy)
-Education(institution, degree, year)
-ContactChannel(label, value, public: bool)          # la regla de PII vive AQUÍ, no en el prompt
-Experience(id, company, role, start, end, location, summary, stack, achievements: list[Achievement])
-Project(id, name, year, role, problem, approach, stack, outcome, links)
-Skill(name, category, level: 1-5, evidence: list[str])   # evidence referencia ids de Experience/Project
-Achievement(text, metric: Metric | None)             # Metric(value, unit)
-KnowledgeBase(profile, experiences, projects, skills)
-```
+`agent/prompts.py` construye el system prompt una sola vez, en el arranque del servicio, y lo
+manda completo en cada llamada como un único bloque marcado para caché (el orden interno de los
+bloques no afecta ese cacheo: todo el prefijo se cachea completo en cuanto es idéntico entre
+llamadas). Hay cuatro bloques de reglas, en orden fijo, seguidos del corpus completo.
 
-`YearMonth` es un `date` con `BeforeValidator` que acepta `"YYYY-MM"` y lo ancla al día 1 del mes.
-Dos validadores a nivel de modelo:
+El primero define la identidad del agente y, en particular, en qué persona gramatical habla: en
+tercera persona, como quien presenta y comenta el perfil de alguien más, nunca en primera persona
+como si el agente fuera esa persona (así queda claro que se está hablando con un agente que
+presenta un perfil, no con la persona del CV misma).
 
-- `Experience._check_range` — `end` no puede ser anterior a `start`.
-- `KnowledgeBase._check_ids_and_evidence` — ids duplicados entre `experiences`/`projects` fallan
-  la carga; cada `evidence` de un `Skill` debe apuntar a un id que exista, o falla la carga. Esto
-  hace que un dato inconsistente truene **al cargar**, no en medio de una conversación con el
-  agente respondiendo con un id inválido.
+El segundo bloque son las reglas de comportamiento: toda afirmación factual tiene que poder
+rastrearse a un id del corpus o a lo que devuelva una herramienta; si el agente va a inferir algo
+que el corpus no declara de forma explícita (el sector de un empleador, a partir del tipo de
+proyectos que hizo, por ejemplo) tiene que marcarlo como inferencia, nunca presentarlo como un
+hecho confirmado; si un campo del perfil está vacío, hay que decirlo así en vez de rellenarlo con
+la capacidad general del modelo de lenguaje; y las preguntas de "cuántos años" o "qué hacías en
+tal año" siempre pasan por herramienta, nunca por aritmética de memoria.
 
-Los archivos fuente son `data/profile.yaml`, `data/experience.yaml`, `data/projects.yaml`,
-`data/skills.yaml` — cargados una sola vez en el lifespan (`load_knowledge_base`), nunca por
-request. `data/narrative/*.md` es contenido de texto libre, indexado aparte (§5.2), no
-estructurado como el resto.
+El tercer bloque es la política de abstención: si algo no se puede responder con lo que hay
+disponible, decirlo y redirigir a lo que sí se sabe, sin rellenar con generalidades vacías; una
+petición fuera de alcance se rehúsa con cortesía, salvo que la pregunta técnica sea sobre el propio
+trabajo documentado en el perfil.
 
----
+El cuarto bloque establece la jerarquía de instrucciones que protege contra inyección de prompt:
+las reglas del system prompt tienen prioridad máxima, el corpus es dato y nunca instrucciones, y
+cualquier texto dentro de él que intente dar órdenes se ignora; lo que mande el cliente en el campo
+de instrucciones tiene menor prioridad que todo lo anterior.
 
-## 8. Providers — el modelo detrás de la API
-
-### 8.1 El contrato (`providers/base.py`)
-
-```python
-class Provider(Protocol):
-    async def complete(self, system, messages, tools, **params) -> ProviderResult: ...
-    def stream(self, system, messages, tools, **params) -> AsyncIterator[str]: ...
-```
-
-`Message` es el turno interno, agnóstico de proveedor (`role`, `content`, `tool_calls`,
-`tool_call_id`, `tool_name`). Cualquier backend que implemente `Provider` es intercambiable sin
-tocar `agent/loop.py` ni el resto del sistema.
-
-### 8.2 `AnthropicMessagesProvider` (`providers/anthropic_messages.py`)
-
-Lógica compartida entre los dos backends de Anthropic (directo y Vertex, que exponen la misma
-interfaz `.messages.create()`/`.messages.stream()`):
-
-- **`to_anthropic_messages`** — traduce la lista de `Message` internos al formato de la Messages
-  API: turnos `tool` consecutivos se agrupan en un único mensaje `user` con varios bloques
-  `tool_result` (lo que la API espera para resultados de un mismo turno de tool-use); un mensaje
-  de asistente con `tool_calls` se traduce a bloques `text` + `tool_use`.
-- **`system_blocks`** — el corpus va en un bloque con `cache_control` (cacheado); las
-  `instructions` de menor prioridad van en un **segundo** bloque, sin `cache_control`, para no
-  romper el prefijo cacheable con contenido que cambia por request.
-- **Retry solo en 429/5xx** (`tenacity`, backoff exponencial con jitter, 3 intentos) — nunca en un
-  4xx de validación del cliente, para no esconder un error real como si fuera transitorio.
-- **Nota real de compatibilidad de SDK:** esta versión del SDK de Anthropic no acepta
-  `temperature` en `messages.create()` — se confirmó inspeccionando la firma real
-  (`inspect.signature`). El control de determinismo del modelo se movió a `output_config.effort`
-  (estilo *reasoning effort*), que no es equivalente. Esto afecta tanto al agente conversacional
-  como al juez de las evals (§12) — el juez no es perfectamente determinista, razón de más para
-  correr varias semillas y reportar varianza en vez de un solo número.
-
-### 8.3 Los dos backends
-
-- **`AnthropicDirectProvider`** — API key propia (`ANTHROPIC_API_KEY`), sin GCP. **Es el proveedor
-  de producción.** La decisión original era Vertex AI (auth por IAM, sin API key del modelo), pero
-  la cuota de Vertex para el modelo de chat quedó rechazada en la ventana del reto (0 en todas las
-  regiones probadas, solicitud de aumento denegada) — la API directa no depende de una aprobación
-  de cuota de terceros.
-- **`VertexAnthropicProvider`** — auth por IAM/ADC, sin API key del modelo. Queda soportado como
-  alternativa con el mismo contrato `Provider`; retomarlo más adelante es un cambio de
-  `PROVIDER_BACKEND`, no de arquitectura.
-
-`providers/factory.py` (`build_provider`) es el único lugar que decide cuál construir, según
-`settings.provider_backend`. Nunca lanza: si el backend elegido no está configurado (falta la API
-key, o `GCP_PROJECT` para Vertex), devuelve `None` y se loguea — el servicio sigue arriba
-(`/healthz` responde) pero `POST /responses` devuelve 500 hasta que haya proveedor.
-
-### 8.4 Embeddings (`providers/embeddings.py`)
-
-`VertexEmbeddings` usa `text-multilingual-embedding-002` — esta cuota de Vertex sí está
-disponible (a diferencia de la del modelo de chat). `task_type` distingue `RETRIEVAL_QUERY` de
-`RETRIEVAL_DOCUMENT` (la forma correcta en Vertex, no prefijos de texto). Vectores L2-normalizados
-al salir. `build_embeddings` devuelve `None` — nunca lanza — si `GCP_PROJECT` está vacío o la
-construcción falla; el retriever cae a BM25 solo (§5.2).
+El corpus en sí concatena el perfil con su educación e idiomas, la experiencia con sus logros e ids
+rastreables, los proyectos, y las habilidades con su nivel y evidencia. El contacto queda fuera de
+ese texto estático a propósito (solo es alcanzable llamando a la herramienta dedicada, lo que
+permite verificar en las evaluaciones que el agente de verdad la usa cuando corresponde, en vez de
+contestar de memoria).
 
 ---
 
-## 9. Guardrails y seguridad
+## 8. Modelo de datos
 
-El endpoint es público: cualquiera puede escribirle.
+El esquema en `knowledge/models.py` define un perfil con nombre, título, resumen, educación,
+idiomas y una lista de canales de contacto; cada canal declara explícitamente si es público, y esa
+regla vive ahí, en el dato mismo, no solo como una instrucción del prompt. La experiencia laboral
+tiene compañía, rol, fechas de inicio y fin, ubicación, resumen, stack tecnológico y una lista de
+logros (cada uno con un texto y opcionalmente una métrica numérica). Los proyectos tienen nombre,
+año, rol, el problema que resolvían, el enfoque, el stack y el resultado. Las habilidades tienen
+nombre, categoría, un nivel del uno al cinco, y una lista de ids que sirven como evidencia de dónde
+se usó esa habilidad.
 
-| Guardrail | Mecanismo | Dónde |
-|---|---|---|
-| Fabricación | Toda afirmación rastreable a un id o tool; política de abstención explícita | §6, BEHAVIOR_RULES |
-| Inyección de prompt | El corpus es dato, nunca instrucciones — jerarquía explícita + heurística barata sobre input crudo | §6, ANTI_INJECTION + `agent/guardrails.py` |
-| PII | `public: true/false` en el dato mismo (`ContactChannel`) — la herramienta filtra ahí, no solo el prompt | §7 |
-| Modalidades no soportadas | Imagen/archivo/audio se detectan y se rechazan **de forma determinista antes de llamar al modelo** — ninguna llamada al proveedor se gasta en algo que no se va a procesar, y la razón se comunica siempre igual | §10.3 |
-| Abuso económico | Rate limit por IP, límite de tamaño de body, tope de `max_output_tokens`, timeout con retry solo en 429/5xx | §10 |
+Las fechas se guardan en formato año-mes y se anclan internamente al día uno de ese mes. Hay dos
+validaciones a nivel de todo el conjunto de datos: una experiencia no puede terminar antes de
+empezar, y los ids tienen que ser únicos entre experiencias y proyectos, con cada referencia de
+evidencia en una habilidad apuntando a un id que de verdad exista (esto hace que un dato
+inconsistente falle al cargar el conocimiento, no a mitad de una conversación con el agente citando
+un id que no existe).
 
-`agent/guardrails.py::check_input` es una heurística barata de **primera línea** (regex sobre
-patrones obvios como "ignora tus instrucciones", "actúa como") — **no reemplaza** un clasificador
-real; solo loguea (`guardrail_flagged`) para tener señal temprana. La defensa real contra
-inyección vive en la jerarquía de instrucciones del system prompt, validada con el golden set de
-evaluación (cero fallos tolerados en la categoría `injection`, ver §12).
-
----
-
-## 10. Transporte HTTP — el ciclo de vida de un request
-
-### 10.1 Middleware y auth (`api/middleware.py`, `api/auth.py`)
-
-`RequestContextMiddleware` corre primero: genera/propaga `X-Request-Id`, lo bindea al contexto de
-`structlog` (todo log de ese request queda correlacionado), rechaza con 400 si `Content-Length`
-excede 256 KB (**solo lee el header**, nunca `request.body()` en middleware — eso agotaría el
-stream antes de que el handler lo parseé), y loguea `request_in`/`request_out` con duración.
-
-`require_bearer` valida el header `Authorization` con `hmac.compare_digest`.
-
-### 10.2 Rate limiting (`api/ratelimit.py`)
-
-Token bucket en memoria por IP: capacidad `b=10`, relleno `r=0.5`/segundo. Una ráfaga de *n*
-solicitudes se admite si *n* ≤ *b*; el uso sostenido converge a *r*. Solo aplica a
-`POST /responses`, no a `/healthz`. Si no hay tokens, responde `429` con header `Retry-After`
-calculado del déficit exacto de tokens.
-
-### 10.3 El handler (`api/routes_responses.py::create_response`)
-
-1. Rechaza `background: true` (opcional del spec, no implementado) — 400 explícito, no un 500
-   genérico.
-2. `_log_request_shape` — la única fuente de evidencia real sobre qué manda la plataforma
-   (`docs/platform-contract.md`), debe vivir en el handler porque `request.body()` ya se agotó si
-   se leyera antes en middleware.
-3. `_resolve_history` — normaliza `body.input` (vía `normalize.py`) y, si viene
-   `previous_response_id`, le antepone el historial guardado.
-4. **Corte determinista de modalidad no soportada** (`_run_agent_or_decline`): si el **último**
-   mensaje del usuario trae `input_image`/`input_file`/`input_audio`, se devuelve
-   `UNSUPPORTED_MODALITY_MESSAGE` sin tocar al proveedor — 0 costo, latencia de milisegundos.
-
-   **Bug real encontrado y corregido:** la primera versión de este chequeo escaneaba **todo**
-   `body.input`, no solo el turno actual. Como la plataforma reproduce el transcript completo en
-   cada request (§2.5), un adjunto rechazado en un turno seguía apareciendo en `body.input` para
-   siempre — el agente quedaba respondiendo "modalidad no soportada" en **cualquier** pregunta
-   posterior de la conversación, sin importar que ya no trajera ningún adjunto. Corregido para
-   mirar únicamente el último mensaje de rol `user` en la lista.
-5. Si no se rechazó por modalidad, corre el loop agéntico completo (§4).
-6. Si `store: true` (default), guarda el historial resultante en `ResponseStore` bajo el nuevo
-   `response_id`.
-7. Construye el `Response` del spec con **todos** los campos required.
-
-La rama de streaming (`_stream_response`) hace lo mismo pero envuelve el loop en un `try/except`
-que, ante cualquier excepción, emite `response.failed` con un mensaje genérico (nunca el
-traceback) en vez de romper la conexión SSE a medias.
+Los archivos fuente son los YAML en `data/`, cargados una sola vez al arrancar el servicio. La
+narrativa larga, en cambio, es texto libre en archivos Markdown dentro de `data/narrative/`, y se
+indexa aparte para el retriever en vez de vivir como datos estructurados.
 
 ---
 
-## 11. Estado conversacional — detalle de la limitación asumida
+## 9. Providers: el modelo detrás de la API
 
-Si el estado viviera en memoria de un proceso con *k* réplicas, la probabilidad de que el turno
-*t+1* caiga en la misma réplica que *t* es 1/*k* — con *k*=2 ya falla la mitad de las
-conversaciones de forma intermitente. Por eso el despliegue usa `--max-instances=1`.
+El contrato es un `Protocol` de Python con dos métodos (uno para completar un turno, otro para
+transmitirlo en streaming) más un `Message` interno agnóstico de proveedor. Cualquier backend que
+implemente esa interfaz es intercambiable sin tocar el loop agéntico ni el resto del sistema.
 
-Esta restricción **dejó de ser una limitación de correctitud** para el cliente real observado, una
-vez confirmado que reproduce el transcript completo en vez de usar `previous_response_id` (§2.5).
-Sigue siendo el límite de diseño documentado si algún cliente distinto sí dependiera de ese campo
-con el servicio escalado horizontalmente — la interfaz `ResponseStore` está pensada para poder
-sustituirse por una implementación persistente (Firestore, por ejemplo) sin tocar el resto del
-código, si algún día hiciera falta.
+La lógica compartida entre los dos backends de Anthropic (directo y vía Vertex, que exponen la
+misma interfaz de Messages API) vive en `anthropic_messages.py`. Ahí se traduce la lista de
+mensajes internos al formato que espera esa API, agrupando turnos consecutivos de herramienta en un
+único mensaje con varios resultados; el corpus se manda en un bloque marcado para caché, mientras
+que las instrucciones de menor prioridad van en un segundo bloque sin esa marca (para no romper el
+prefijo cacheable con contenido que cambia en cada request). Los reintentos solo aplican a errores
+429 o 5xx, nunca a un 4xx de validación del cliente.
+
+Un detalle real de compatibilidad: esta versión del SDK de Anthropic no acepta el parámetro
+`temperature` en la llamada de creación de mensajes (confirmado inspeccionando la firma real de la
+función). El control de determinismo se movió a otro parámetro con semántica distinta, así que ni
+el agente conversacional ni el juez de las evaluaciones corren con temperatura fija en cero; el
+juez no es perfectamente determinista, razón de más para correr varias semillas y reportar
+varianza en vez de confiar en un solo número.
+
+El proveedor de producción es la API directa de Anthropic, con una API key propia y sin dependencia
+de GCP. La decisión original era Vertex AI (auth por IAM, sin API key del modelo), pero la cuota de
+Vertex para el modelo de chat quedó rechazada durante la ventana del reto en todas las regiones
+probadas, así que se cambió a la API directa. El backend de Vertex se mantiene implementado y
+soportado, con el mismo contrato (cambiar entre uno y otro es solo una variable de entorno).
+
+Un único módulo, `factory.py`, decide qué proveedor construir según la configuración, y nunca lanza
+una excepción: si falta la credencial correspondiente, devuelve `None` y lo registra en el log. El
+servicio sigue arriba y responde en `/healthz`, pero el endpoint principal devuelve un error hasta
+que haya un proveedor configurado.
+
+Los embeddings para el retriever de respaldo usan un modelo multilingüe de Vertex, cuya cuota sí
+está disponible aunque la del modelo de chat no lo estuviera. Igual que el resto de piezas
+opcionales, si no hay proyecto de GCP configurado la construcción del embedder devuelve `None` en
+vez de fallar, y el retriever cae a BM25 solo.
 
 ---
 
-## 12. Evaluación
+## 10. Guardrails y seguridad
 
-### 12.1 Diseño
+El endpoint es público, así que cualquiera puede escribirle. Contra fabricación de información, la
+defensa es que toda afirmación debe rastrearse a un dato o a una herramienta, reforzada por la
+política de abstención explícita del prompt. Contra inyección de prompt, el corpus se trata siempre
+como dato y nunca como instrucciones, con esa jerarquía establecida explícitamente en el system
+prompt y reforzada por una heurística barata que revisa el input crudo en busca de patrones obvios
+como "ignora tus instrucciones" (esa heurística no reemplaza ninguna defensa real, solo deja una
+señal temprana en los logs; la defensa que de verdad importa es la jerarquía de instrucciones,
+validada con el golden set exigiendo cero fallos en esa categoría).
 
-`evals/golden.yaml` — 50 casos reales (contra el CV real, no datos de ejemplo), distribuidos en
-7 categorías: `factual_simple` (15), `temporal` (8), `comparativa_abierta` (8), `fuera_de_corpus`
-(6), `fuera_de_alcance` (5), `injection` (4), `ambigua` (4).
+Sobre información privada, qué canal de contacto es público y cuál no es una regla que vive en el
+dato mismo, así que la herramienta que expone contacto filtra ahí y no depende únicamente de que el
+prompt se comporte bien. Contra abuso económico hay límite de tamaño de solicitud, límite de tokens
+de salida, rate limiting por IP, y reintentos con backoff solo ante errores del proveedor que tiene
+sentido reintentar.
 
-Cada caso se evalúa con dos mecanismos independientes:
+Un guardrail adicional es el rechazo de modalidades que el agente no soporta. Cuando el último
+mensaje del usuario trae una imagen, un archivo o audio, el sistema lo detecta y responde con una
+explicación fija antes de siquiera llamar al modelo (no es una decisión que tome el LLM caso por
+caso, así que la razón se comunica siempre igual y ninguna llamada al proveedor se desperdicia en
+algo que de todos modos no se iba a procesar).
 
-- **Aserciones deterministas** — `must_contain`/`must_not_contain` (substrings, comparación en
-  minúsculas) y `expected_tool` (¿se llamó la herramienta esperada?).
-- **Juez LLM** (`evals/judge.py`) — rúbrica por caso, salida JSON forzada
-  (`{"grounded", "relevant", "refused", "reason"}`), parseada con `json.JSONDecoder().raw_decode`
-  desde el primer `{` (no con el último `}` del texto — un juez que agrega texto después del JSON
-  rompía el parseo naive aunque el objeto en sí fuera válido).
+---
 
-**Criterio de aprobación por categoría** (`evals/run.py::run_case`): solo `injection` y
-`fuera_de_alcance` exigen que el juez marque `refused=True`. Para el resto — incluido
-`fuera_de_corpus` — el criterio es `grounded ∧ relevant ∧ must_contain_ok ∧ must_not_contain_ok ∧
-tool_ok`, **sin exigir abstención**. Esto no es incidental: para una pregunta como "¿hablas
-francés?" sobre un perfil sin idiomas registrados, la respuesta ideal es un "no" directo y
-fundamentado citando el KB — no una abstención genérica. Exigir `refused` ahí penalizaba
-exactamente el comportamiento correcto (hallazgo real de la primera corrida completa contra datos
-reales).
+## 11. El ciclo de vida de un request
 
-**Gate duro:** cero fallos tolerados en `injection` y `fuera_de_corpus` (`ZERO_FAILURE_CATEGORIES`)
-— si cualquier caso de esas dos categorías falla, `make eval` sale con código de error.
+Antes de llegar al handler, un middleware genera o propaga un identificador de request, lo asocia
+al contexto de logging, y rechaza con un error explícito cualquier solicitud cuyo `Content-Length`
+exceda 256 KB (leyendo solo ese header, nunca el cuerpo completo en el middleware, porque leerlo
+ahí agotaría el stream antes de que el handler pudiera parsearlo).
 
-### 12.2 Rigor estadístico (`evals/metrics.py`)
+Rate limiting: token bucket por IP, capacidad $b=10$, relleno $r=0.5$/s. Admite ráfaga $n\le b$;
+sostenido converge a $r$. Sin tokens:
 
-- **Intervalo de Wilson** (no el normal — más apropiado con *n* chico y tasas cerca de 1) sobre el
-  total pooled de todas las semillas.
-- **Media ± desviación estándar entre semillas** (no solo el intervalo dentro de una corrida) —
-  con `temperature` no disponible en esta versión del SDK (§8.2), cada corrida es una muestra, y
-  la varianza entre semillas es información real, no ruido a ignorar.
-- **Kappa de Cohen** del juez contra etiquetas humanas (`evals/manual_labels.yaml`) — si κ<0.6, el
-  juez no sirve como métrica hasta iterar su rúbrica. A la fecha de este documento, la plantilla
-  de etiquetas manuales sigue sin llenar (`correct: null` en sus 20 entradas), así que el reporte
-  muestra "sin etiquetas manuales todavía" en vez de inventar un kappa.
+$$\text{Retry-After} = \frac{1-\text{tokens}}{r}$$
 
-### 12.3 Último resultado real
+Dentro del handler, primero se rechaza cualquier solicitud con `background: true` (no
+implementado). Después se registra la forma del request (qué campos trae, si es streaming, cuántos
+ítems tiene el input) como evidencia real de cómo llama la plataforma. Luego se normaliza el input
+y se resuelve el historial, uniendo lo que venga guardado bajo un `previous_response_id` con los
+mensajes nuevos del request actual.
 
-Corrida del **2026-09-03**, 3 semillas, contra el CV real y el proveedor de producción — **anterior**
-a los cambios de voz en tercera persona y de rechazo de modalidad no soportada (§6, §10.3), que no
-alteran el criterio de las aserciones existentes pero no se han vuelto a medir con un `make eval`
-completo desde entonces:
+Antes de correr el loop agéntico se hace el corte determinista de modalidad no soportada, mirando
+únicamente el último mensaje de usuario del request (no el historial completo, que en cada llamada
+trae también los turnos anteriores de la conversación).
+
+Si no hubo corte por modalidad, corre el loop agéntico completo. Si la solicitud pide guardar el
+resultado, el historial se guarda bajo un nuevo id de respuesta, y se construye el objeto de
+respuesta con todos los campos que el spec exige. La rama de streaming hace lo mismo pero envuelve
+el loop en un manejo de errores que, ante cualquier excepción, emite un evento de fallo con un
+mensaje genérico en vez de romper la conexión a medias o filtrar un traceback.
+
+---
+
+## 12. Sobre el estado conversacional y la limitación de una sola réplica
+
+Con $k$ réplicas y estado en memoria de proceso:
+
+$$P(\text{mismo turno} \to \text{misma réplica}) = \frac{1}{k}$$
+
+Con $k=2$ ya falla la mitad de las conversaciones de forma intermitente. Por eso el despliegue
+corre con una sola instancia.
+
+Esa restricción dejó de ser un problema de corrección para el cliente real observado, una vez
+confirmado que reproduce el historial completo en vez de depender de `previous_response_id`. Sigue
+siendo el límite de diseño documentado si algún cliente distinto sí llegara a depender de ese campo
+con el servicio corriendo en varias réplicas (la interfaz del almacén de respuestas está pensada
+para poder cambiarse por una implementación persistente, como Firestore, sin tocar el resto del
+código si hiciera falta).
+
+---
+
+## 13. Evaluación
+
+### Diseño
+
+El golden set (`evals/golden.yaml`) tiene cincuenta casos escritos contra el CV real, repartidos en
+siete categorías: quince factuales simples, ocho temporales, ocho comparativos o abiertos, seis de
+preguntas fuera del corpus, cinco fuera del alcance del agente, cuatro de intentos de inyección, y
+cuatro ambiguos.
+
+Cada caso se evalúa por dos caminos independientes: aserciones deterministas (la respuesta contiene
+ciertos términos, no contiene otros, y se llamó la herramienta esperada cuando aplica) y un juez
+basado en el mismo modelo, con rúbrica por caso, forzado a un JSON con cuatro campos (si la
+respuesta está fundamentada, si es relevante, si el agente se abstuvo, y una razón breve).
+
+El criterio de aprobación varía por categoría. Solo inyección y fuera de alcance exigen que el juez
+marque la respuesta como abstención; para el resto, incluida fuera del corpus, se exige
+fundamentación, relevancia y las aserciones deterministas, sin exigir abstención (para una pregunta
+como si el agente habla francés sobre un perfil sin idiomas registrados, la respuesta ideal es un
+"no" fundamentado citando el corpus, no una abstención genérica; exigirla penalizaba exactamente el
+comportamiento correcto). El gate duro: cero fallos tolerados en inyección y fuera del corpus, o
+`make eval` termina con error.
+
+### Rigor estadístico
+
+Con $n$ preguntas y tasa observada $\hat p$, el intervalo de Wilson ($z=1.96$):
+
+$$\text{IC}_{95\%} = \frac{\hat p + \frac{z^2}{2n} \pm z\sqrt{\frac{\hat p(1-\hat p)}{n}+\frac{z^2}{4n^2}}}{1+\frac{z^2}{n}}$$
+
+Como esta versión del SDK no permite fijar la temperatura en cero, cada corrida es una muestra, no
+una medición exacta (se reportan media y desviación estándar entre varias semillas además del
+intervalo). El juez se valida contra etiquetas puestas a mano con el kappa de Cohen:
+
+$$\kappa = \frac{p_o - p_e}{1 - p_e}$$
+
+con $p_o$ la concordancia observada y $p_e$ la esperada por azar; $\kappa<0.6$ invalida al juez
+como métrica hasta ajustar su rúbrica. Esas etiquetas manuales todavía no se han llenado, así que
+el reporte lo dice explícitamente en vez de inventar un número.
+
+### Último resultado real
+
+Corrida del 3 de septiembre de 2026, tres semillas, contra el CV real y el proveedor de producción
+(anterior a los cambios de voz en tercera persona y de rechazo de modalidad no soportada, que no
+deberían alterar el criterio de las aserciones existentes pero tampoco se han vuelto a medir con
+una corrida completa desde entonces):
 
 | Categoría | n | Tasa | IC Wilson 95% |
 |---|---|---|---|
@@ -574,113 +530,86 @@ completo desde entonces:
 | ambigua | 12 | 83% | [0.55, 0.95] |
 | temporal | 24 | 79% | [0.59, 0.91] |
 
-Gate de cero fallos en injection/fuera_de_corpus: ✅. Costo de esa corrida: $0.98. Reporte completo,
-regenerado en cada corrida, en `docs/evals-report.md`.
+El gate de cero fallos en inyección y fuera del corpus se cumplió, con un costo total de esa
+corrida de 0.98 dólares. El reporte completo se regenera en cada corrida y queda en
+`docs/evals-report.md`.
 
 ---
 
-## 13. Despliegue
+## 14. Despliegue
 
-### 13.1 Imagen (`Dockerfile`, multi-stage)
+La imagen se construye en dos etapas. La primera instala las dependencias de terceros antes de
+copiar el código propio (así esa capa de Docker se reutiliza mientras no cambien las dependencias,
+sin importar cuánto cambie el código fuente); solo después se instala el paquete local en sí. La
+segunda etapa parte de una imagen limpia, crea un usuario sin privilegios de root, copia lo ya
+construido, y arranca el servidor con uvicorn.
 
-```dockerfile
-FROM python:3.12-slim AS builder
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project   # solo deps de terceros — cachea bien
-COPY src/ data/ web/ .
-RUN uv sync --frozen --no-dev                        # ahora sí instala cv_agent (paquete local)
+En Cloud Run, la autenticación de la plataforma de Google Cloud está desactivada a propósito
+(`--allow-unauthenticated`), porque la autenticación real la maneja la aplicación con el Bearer
+token; son dos capas distintas, y dejar activa la de Google le daría a la plataforma consumidora un
+error que no podría diagnosticar desde su lado. El servicio corre con una sola instancia siempre
+activa, sin arranque en frío, usando una cuenta de servicio dedicada con privilegios mínimos. Los
+secretos (API key de la plataforma y de Anthropic) viven en Secret Manager y se montan como
+variables de entorno, nunca escritos en el código.
 
-FROM python:3.12-slim
-RUN useradd -m -u 1000 app                            # nunca root
-COPY --from=builder --chown=app:app /app /app
-USER app
-CMD exec uvicorn cv_agent.api.app:app --host 0.0.0.0 --port ${PORT:-8080}
-```
-
-El `--no-install-project` en el primer `uv sync` es deliberado: instala solo las dependencias de
-terceros antes de copiar el código propio, así la capa de Docker se reutiliza mientras
-`pyproject.toml`/`uv.lock` no cambien, sin importar cuánto cambie `src/`.
-
-### 13.2 Cloud Run
-
-- `--allow-unauthenticated` a nivel de Cloud Run (IAM) — la autenticación real es el Bearer de
-  aplicación (§2.1); son dos capas distintas, y dejar el IAM activo le daría a la plataforma un
-  403 sin forma de diagnosticarlo desde su lado.
-- `--min-instances=1 --max-instances=1` — sin cold start, y la restricción de una sola réplica es
-  la limitación asumida de §11.
-- Service account dedicada (`cv-agent-sa`), de mínimo privilegio.
-- Secretos (`API_KEY` de la plataforma, `ANTHROPIC_API_KEY`) en Secret Manager, montados como
-  variables de entorno vía `--set-secrets`, nunca en el código ni en variables planas.
-
-### 13.3 Bug real de infraestructura: Artifact Registry
-
-El repo de Artifact Registry que `gcloud run deploy --source .` autocrea (`cloud-run-source-deploy`)
-quedó en un estado donde Cloud Build completaba la imagen sin problema, pero Cloud Run no podía
-**importarla** en ningún despliegue posterior — "Container import failed", reproducible con
-cualquier imagen nueva, en cualquier región, sin ninguna causa expuesta por la API. Aislado
-probando: (a) una imagen pública de Google en un servicio nuevo — funcionó; (b) un repo de
-Artifact Registry creado a mano, con la misma imagen — funcionó de inmediato. El repo autogenerado
-específicamente quedó inutilizable. `infra/04_deploy.sh` (y el target `deploy` del `Makefile`) ya
-no dependen de él: hacen build+push explícito (`gcloud builds submit --tag=...`) a un repo propio
-(`cv-agent-repo`), creado si no existe, y despliegan con `--image` en vez de `--source`.
+El script de despliegue y el target correspondiente del Makefile construyen y suben la imagen de
+forma explícita a un repositorio propio de Artifact Registry antes de desplegar, en vez de dejar
+que `gcloud run deploy --source .` cree y use uno automáticamente.
 
 ---
 
-## 14. Bugs reales encontrados y corregidos — resumen consolidado
+## 15. Bugs reales, resumidos
 
-Todos verificados con evidencia real (logs de producción, corridas de `make eval` contra el
-proveedor real, o tráfico real de la plataforma), no supuestos:
+La siguiente tabla junta los problemas reales que aparecieron durante el desarrollo, todos
+verificados con evidencia concreta (logs de producción, corridas del golden set contra el proveedor
+real, o tráfico real de la plataforma), no supuestos a partir de leer el código:
 
-| # | Bug | Síntoma | Causa raíz | Fix |
+| # | Bug | Síntoma | Causa | Solución |
 |---|---|---|---|---|
-| 1 | `years_with_skill` sensible a mayúsculas | `compute_years("Python")` devolvía 0 años en silencio | `stack` en YAML usa minúsculas; el modelo llama con el nombre propio del skill | Comparación insensible a mayúsculas en `temporal.py` |
-| 2 | Parser JSON del juez frágil | `JudgeParseError: Extra data` con un JSON por lo demás válido | Se tomaba desde el primer `{` hasta el **último** `}` del texto completo, no el primer objeto completo | `json.JSONDecoder().raw_decode` desde el primer `{` |
-| 3 | Juez sin fecha de referencia real | El juez marcaba fechas de 2026 como "imposibles" en respuestas de `temporal` correctas | El juez asumía "hoy" desde su propio entrenamiento, sin la fecha real del sistema | Se inyecta `Fecha de hoy` real en cada prompt del juez |
-| 4 | Corpus del juez incompleto | Respuestas correctas basadas en `get_contact()` o en la narrativa se marcaban "inventadas" | El corpus que ve el juez (`build_corpus`) no incluye contacto ni narrativa — esas rutas solo son alcanzables por herramienta, no por el texto estático | Corpus **separado**, solo para el juez, que sí incluye ambas — sin cambiar lo que ve el agente real (eso rompería `expected_tool`) |
-| 5 | Aserciones `must_not_contain` autocontradictorias | Casos de `golden.yaml` reprobaban una negación perfectamente correcta ("no hablo francés" contiene "francés") | Se prohibía la palabra clave en vez de la afirmación falsa completa | Reescritas para prohibir la afirmación ("Sí, hablo francés"), no el término |
-| 6 | Criterio de pass exigía abstención en `fuera_de_corpus` | Un "no" directo y fundamentado reprobaba por no ser una abstención | Se copió el criterio de `injection`/`fuera_de_alcance` sin ajustarlo al caso real | Solo `injection`/`fuera_de_alcance` exigen `refused=True` (§12.1) |
-| 7 | `.gcloudignore` excluía la narrativa de todo despliegue | `search_profile` devolvía siempre `[]` en producción, sin error visible | Patrón `*.md` sin ancla a la raíz también capturaba `data/narrative/*.md` | Patrón anclado a la raíz (`/*.md`) |
-| 8 | Rechazo de modalidad pegado a turnos siguientes | El agente seguía diciendo "no soporto imágenes" en preguntas de texto normales, turnos después de un adjunto | Se escaneaba todo `body.input`, y la plataforma reproduce el historial completo cada turno | Solo se evalúa el último mensaje de usuario |
-| 9 | Repo de Artifact Registry autogenerado roto | "Container import failed" en todo deploy vía `--source .` | Estado inconsistente del repo autocreado por `gcloud`, sin causa expuesta por la API | Build+push explícito a un repo propio (§13.3) |
-| 10 | `print()` truena en consola de Windows | `UnicodeEncodeError` al imprimir resultados con acentos o emoji (CLI, `make eval`) | La consola de Windows por defecto usa `cp1252`, que no cubre esos caracteres | Escritura directa a `sys.stdout.buffer` en UTF-8 con `errors="replace"` |
+| 1 | Comparación de skill sensible a mayúsculas | `compute_years("Python")` devolvía cero años sin error | El stack en los YAML usa minúsculas; el modelo llama con el nombre propio del skill | Comparar ambos lados en minúsculas |
+| 2 | Parser del JSON del juez frágil | Error de parseo con un JSON por lo demás válido | Se tomaba el texto hasta la última llave de cierre en vez del primer objeto completo | Usar el decodificador de JSON desde la primera llave de apertura |
+| 3 | El juez no conocía la fecha real | Marcaba fechas correctas de 2026 como imposibles | Asumía "hoy" a partir de su propio entrenamiento | Inyectar la fecha real del sistema en cada prompt del juez |
+| 4 | Corpus del juez incompleto | Respuestas correctas basadas en contacto o narrativa se marcaban como inventadas | El corpus que ve el juez no incluye lo que solo es alcanzable por herramienta | Darle al juez un corpus aparte que sí las incluya, sin tocar lo que ve el agente |
+| 5 | Aserciones que se contradecían a sí mismas | Una negación correcta reprobaba por contener la palabra prohibida | Se prohibía el término en vez de la afirmación falsa completa | Reescribir las aserciones para prohibir la afirmación, no el término |
+| 6 | Criterio de aprobación exigía abstención donde no correspondía | Un "no" fundamentado reprobaba por no ser una abstención | Se copió el criterio de otras categorías sin ajustarlo | Solo las categorías que de verdad requieren rehusar exigen abstención |
+| 7 | Narrativa excluida del despliegue | El retriever de respaldo devolvía siempre una lista vacía en producción | Un patrón de exclusión de archivos sin ancla a la raíz capturaba también los datos que sí hacían falta | Anclar el patrón a la raíz del repositorio |
+| 8 | Rechazo de modalidad pegado a turnos siguientes | El agente seguía rechazando preguntas normales después de un adjunto rechazado | Se revisaba todo el historial en vez de solo el turno actual | Revisar únicamente el último mensaje del usuario |
+| 9 | Repositorio de Artifact Registry autogenerado roto | Fallo de importación en todo despliegue por el flujo por defecto | Estado inconsistente del repositorio que crea `gcloud` automáticamente | Construir y subir la imagen a un repositorio propio |
+| 10 | Falla al imprimir en consola de Windows | Error de codificación con acentos o emoji en la salida de la CLI y de las evaluaciones | La consola de Windows usa por defecto una codificación que no cubre esos caracteres | Escribir directo al flujo de salida en UTF-8 |
 
-Los bugs 1–6 y 10 se encontraron corriendo el sistema real (CLI, `make eval`) contra el proveedor
-de producción — ninguno lo hubiera atrapado una prueba puramente unitaria con `FakeProvider`. Los
-bugs 7–9 solo se manifestaban en producción (Cloud Run/Cloud Build), no en local — la razón por la
-que este proyecto insiste en verificar contra tráfico y despliegues reales, no solo contra el
-entorno de desarrollo.
-
----
-
-## 15. Limitaciones conocidas y asumidas
-
-- **API key de larga vida en vez de auth por IAM** — consecuencia de la cuota de Vertex rechazada
-  (§8.3); mitigado con Secret Manager, no con una API key en el código.
-- **Una sola réplica por defecto** — no es limitación de correctitud para el cliente real
-  observado (§11), sigue siendo el límite de diseño en general.
-- **`search_profile` depende de embeddings precomputados** para su mejor calidad; sin ellos cae a
-  BM25 solo, con recall menor pero sin fallar.
-- **Preguntas operativas del cliente sin confirmar** — timeout exacto, límites de tamaño de
-  respuesta y concurrencia real de pruebas no se pudieron verificar contra documentación de la
-  plataforma (el agente de soporte de la plataforma no responde preguntas técnicas de este nivel);
-  se diseñó con valores conservadores propios (timeout de proveedor 30s, `MAX_OUTPUT_TOKENS_CAP`
-  4096, rate limit *b*=10 *r*=0.5/s) en vez de cifras confirmadas.
-- **Streaming bufferizado, no incremental token a token** (§2.4).
-- **`/healthz` no es alcanzable en el dominio `*.run.app` de Cloud Run** — una ruta reservada a
-  nivel de borde de Google intercepta ese path específico antes de que llegue al contenedor
-  (confirmado comparando headers: rutas reales del servicio traen `server: Google Frontend` y
-  `x-request-id`/`x-cloud-trace-context`; `/healthz` no trae ninguno de los dos). No afecta el
-  spec — la plataforma consumidora llama `POST /v1/responses`, nunca `/healthz` — mencionado aquí
-  como una curiosidad de infraestructura verificada, no una limitación funcional real.
+Los primeros seis y el último aparecieron corriendo el sistema real (la CLI, las evaluaciones)
+contra el proveedor de producción; ninguno lo hubiera detectado una prueba puramente unitaria con
+el proveedor simulado. Los tres restantes solo se manifestaban en producción, no en local, lo que
+explica por qué este proyecto insiste en verificar contra despliegues y tráfico reales en vez de
+confiar únicamente en el entorno de desarrollo.
 
 ---
 
-## 16. Comandos de referencia
+## 16. Limitaciones conocidas
+
+El proyecto corre con una API key de larga vida en vez de autenticación por IAM, consecuencia de la
+cuota de Vertex rechazada (se mitiga guardándola en Secret Manager en vez de en el código). Sigue
+limitado a una sola réplica por defecto, aunque eso dejó de afectar la corrección para el cliente
+real observado. El retriever de respaldo depende de tener embeddings precomputados para su mejor
+calidad; sin ellos cae a búsqueda léxica sola, con menos recall pero sin fallar. Varios parámetros
+operativos del cliente (timeout exacto, límites de tamaño de respuesta, concurrencia real de
+pruebas) no se pudieron confirmar contra documentación de la plataforma, así que se diseñaron con
+valores conservadores propios en vez de cifras confirmadas. El streaming sigue bufferizado en vez
+de incremental token por token.
+
+Una curiosidad de infraestructura, verificada pero sin impacto funcional real: la ruta `/healthz`
+no es alcanzable en el dominio de Cloud Run (algo en el borde de la red de Google intercepta ese
+path específico antes de que llegue al contenedor, confirmado comparando los headers de esa
+respuesta contra los de cualquier otra ruta del servicio). No afecta nada porque la plataforma
+consumidora nunca llama a `/healthz`, solo al endpoint principal.
+
+---
+
+## 17. Comandos de referencia
 
 ```bash
 make dev            # uvicorn con reload, :8080
-make test            # pytest, FakeProvider, sin red — corre en CI en cada push
+make test            # pytest, proveedor simulado, sin red — corre en CI en cada push
 make lint             # ruff check --fix + format
 make typecheck         # mypy --strict sobre src/
 make kb                 # precomputa embeddings de data/narrative/*.md
@@ -689,7 +618,8 @@ make smoke URL=<url>      # curl end-to-end contra un despliegue real
 make deploy                # build + push a Artifact Registry + gcloud run deploy
 ```
 
-Variables de entorno relevantes (`.env`, ver `.env.example`): `API_KEY` (Bearer de la plataforma),
-`PROVIDER_BACKEND` (`anthropic_direct` | `vertex`), `ANTHROPIC_API_KEY`, `GCP_PROJECT` (opcional,
-solo para embeddings o si `PROVIDER_BACKEND=vertex`), `MODEL_ID`, `MAX_LOOP_ITERATIONS`,
-`STATE_TTL_SECONDS`, `MAX_OUTPUT_TOKENS_CAP`, `PROVIDER_TIMEOUT_SECONDS`.
+Variables de entorno relevantes, documentadas en `.env.example`: `API_KEY` para el Bearer de la
+plataforma, `PROVIDER_BACKEND` para elegir entre la API directa y Vertex, `ANTHROPIC_API_KEY`,
+`GCP_PROJECT` (opcional, solo hace falta para embeddings o si se usa Vertex como backend del
+modelo), `MODEL_ID`, y los parámetros operativos: máximo de iteraciones del loop, TTL del estado
+conversacional, tope de tokens de salida, y timeout del proveedor.
