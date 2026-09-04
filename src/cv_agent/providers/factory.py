@@ -1,5 +1,6 @@
 """Un solo lugar que decide qué `Provider` construir según `settings.provider_backend` — usado
-por `api/app.py`, `cli.py` y `evals/run.py` para no triplicar el switch vertex/contingencia."""
+por `api/app.py`, `cli.py` y `evals/run.py` para no triplicar el switch entre `anthropic_direct`
+(producción) y `vertex` (alternativa)."""
 
 from __future__ import annotations
 

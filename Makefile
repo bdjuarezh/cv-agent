@@ -25,4 +25,4 @@ smoke:
 	./scripts/smoke.sh $(URL)
 
 deploy:
-	gcloud run deploy cv-agent --source . --region $$CLOUD_RUN_REGION
+	PROJECT=$$GCP_PROJECT REGION=$$CLOUD_RUN_REGION bash infra/04_deploy.sh

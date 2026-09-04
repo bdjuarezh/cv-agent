@@ -1,6 +1,6 @@
-"""API directa de Anthropic (API key propia, sin GCP) — **proveedor de contingencia**, no la
-decisión de producción (D8: Vertex/IAM, ver ARCHITECTURE.md §6). Existe para no quedar bloqueados
-si la cuota de Vertex tarda en aprobarse: misma interfaz `Provider`, mismo `agent/loop.py`, solo
+"""API directa de Anthropic (API key propia, sin GCP) — **el proveedor de producción**
+(ARCHITECTURE.md §6, §7): la cuota de Vertex AI para el modelo de chat nunca se aprobó a tiempo
+para el reto. Misma interfaz `Provider`, mismo `agent/loop.py` que `vertex_anthropic.py`, solo
 cambia la autenticación."""
 
 from __future__ import annotations
