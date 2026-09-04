@@ -162,13 +162,15 @@
   category: comparativa_abierta
   question: "¿Qué te llevó a especializarte en inteligencia artificial?"
   must_contain: []
-  rubric: "Debe reflejar la narrativa real: interés por simular sistemas físicos con aprendizaje profundo durante la licenciatura en física, luego maestría en IIMAS."
+  expected_tool: search_profile
+  rubric: "Debe reflejar la narrativa real: interés por simular sistemas físicos con aprendizaje profundo durante la licenciatura en física, luego maestría en IIMAS. Solo la narrativa larga tiene esta información — debe usar search_profile, no puede responderla desde el corpus estático."
 
 - id: g026
   category: comparativa_abierta
   question: "¿Cómo tomas decisiones cuando los requisitos de un proyecto son ambiguos?"
   must_contain: []
-  rubric: "Debe reflejar los pilares de la narrativa 'Cómo trabajo': responsabilidad, colaboración, creatividad."
+  expected_tool: search_profile
+  rubric: "Debe reflejar los pilares de la narrativa 'Cómo trabajo': responsabilidad, colaboración, creatividad. Solo la narrativa larga tiene esta información — debe usar search_profile."
 
 - id: g027
   category: comparativa_abierta
@@ -180,13 +182,15 @@
   category: comparativa_abierta
   question: "¿Qué te interesó del procesamiento de lenguaje natural?"
   must_contain: []
-  rubric: "Debe conectar con la narrativa: el interés por NLP nació durante la maestría en IIMAS."
+  expected_tool: search_profile
+  rubric: "Debe conectar con la narrativa: el interés por NLP nació durante la maestría en IIMAS. Solo la narrativa larga tiene esta información — debe usar search_profile."
 
 - id: g029
   category: comparativa_abierta
   question: "¿Cómo describirías tu forma de colaborar en equipo?"
   must_contain: []
-  rubric: "Debe reflejar el pilar de colaboración de la narrativa 'Cómo trabajo'."
+  expected_tool: search_profile
+  rubric: "Debe reflejar el pilar de colaboración de la narrativa 'Cómo trabajo'. Solo la narrativa larga tiene esta información — debe usar search_profile."
 
 - id: g030
   category: comparativa_abierta
@@ -198,7 +202,8 @@
   category: comparativa_abierta
   question: "¿Por qué te especializaste en aprendizaje profundo y no en otra rama de la IA?"
   must_contain: []
-  rubric: "Debe reflejar la narrativa: simular sistemas físicos con aprendizaje profundo durante la licenciatura en física."
+  expected_tool: search_profile
+  rubric: "Debe reflejar la narrativa: simular sistemas físicos con aprendizaje profundo durante la licenciatura en física. Solo la narrativa larga tiene esta información — debe usar search_profile."
 
 # --- fuera_de_corpus (6) ---
 - id: g032
