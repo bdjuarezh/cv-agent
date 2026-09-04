@@ -55,7 +55,7 @@ register_error_handlers(app)
 
 app.include_router(meta_router)
 app.include_router(responses_router, prefix="/v1")  # /v1/responses
-app.include_router(responses_router)  # /responses — ver 01_ARQUITECTURA.md §1
+app.include_router(responses_router)  # /responses — ver ARCHITECTURE.md §0
 
 _well_known = REPO_ROOT / "web" / ".well-known"
 if _well_known.exists():

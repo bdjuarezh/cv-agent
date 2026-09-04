@@ -1,4 +1,4 @@
-"""structlog JSON para Cloud Logging (07_SCRIPTS_Y_CONFIG.md §E.9).
+"""structlog JSON para Cloud Logging.
 
 `merge_contextvars` es lo que liga cada log al `request_id` que ata `api/middleware.py` — sin
 tocar la firma de ninguna función intermedia."""

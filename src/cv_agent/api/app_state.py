@@ -1,4 +1,4 @@
-"""Estado construido una sola vez en el lifespan (CLAUDE.md regla 3: carga costosa -> lifespan),
+"""Estado construido una sola vez en el lifespan (carga costosa va en el lifespan, no por request),
 expuesto como dependencia de FastAPI para poder sobreescribirlo en tests con `FakeProvider`
 (`app.dependency_overrides[get_app_state] = ...`) sin tocar `app.state` directamente."""
 

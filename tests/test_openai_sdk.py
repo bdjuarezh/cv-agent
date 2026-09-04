@@ -1,5 +1,5 @@
 """El más importante del repo: si el SDK oficial de OpenAI habla con nuestro endpoint sin
-parches, la plataforma de Banorte también (02_PLAN_CLAUDE_CODE.md Fase 3)."""
+parches, la plataforma de Banorte también."""
 
 from collections.abc import Callable
 

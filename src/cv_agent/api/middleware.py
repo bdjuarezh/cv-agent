@@ -1,6 +1,6 @@
-"""`request_id` correlacionado en logs + límite de tamaño de body (01_ARQUITECTURA.md §5e,
-`02_PLAN_CLAUDE_CODE.md` Fase 4). Solo lee `Content-Length`, nunca `request.body()` — eso
-agotaría el stream antes de que el handler lo parseé (`docs/platform-contract.md` §8.4)."""
+"""`request_id` correlacionado en logs + límite de tamaño de body (ARCHITECTURE.md §4). Solo lee
+`Content-Length`, nunca `request.body()` — eso agotaría el stream antes de que el handler lo
+parseé."""
 
 from __future__ import annotations
 

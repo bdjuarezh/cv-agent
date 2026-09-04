@@ -1,4 +1,4 @@
-"""`POST /v1/responses` — el contrato del spec, sin creatividad (01_ARQUITECTURA.md §1)."""
+"""`POST /v1/responses` — el contrato del spec, sin creatividad (ARCHITECTURE.md §0)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import structlog
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
+from cv_agent.agent.loop import LoopResult
 from cv_agent.agent.loop import run as run_agent
 from cv_agent.api.app_state import AppState, get_app_state
 from cv_agent.api.auth import require_bearer
@@ -22,7 +23,13 @@ from cv_agent.config import settings
 from cv_agent.obs.metrics import metrics
 from cv_agent.providers.base import Message
 from cv_agent.providers.base import Usage as ProviderUsage
-from cv_agent.schemas.requests import CreateResponseBody
+from cv_agent.schemas.requests import (
+    CreateResponseBody,
+    InputAudioPart,
+    InputFilePart,
+    InputImagePart,
+    UserMessageItem,
+)
 from cv_agent.schemas.responses import (
     OutputMessage,
     OutputTextContent,
@@ -34,6 +41,29 @@ from cv_agent.schemas.responses import (
 log = structlog.get_logger()
 
 router = APIRouter()
+
+# Determinista, no una decisión del modelo: así la razón siempre se comunica igual y no cuesta
+# una llamada al proveedor. Los toggles de imagen/archivo de la plataforma están apagados por defecto
+# (docs/platform-contract.md §5); esto cubre el caso de que alguien los prenda de todos modos.
+UNSUPPORTED_MODALITY_MESSAGE = (
+    "Este agente no procesa imágenes ni audio todavía. Dado el propósito de este proyecto — un "
+    "agente conversacional sobre un CV — agregar esa modalidad ahora sería complejidad "
+    "especulativa sin un caso de uso claro. Si una prueba posterior de la evaluación la requiere, "
+    "se implementará entonces."
+)
+
+_UNSUPPORTED_PART_TYPES = (InputImagePart, InputFilePart, InputAudioPart)
+
+
+def _requests_unsupported_modality(body: CreateResponseBody) -> bool:
+    if isinstance(body.input, str):
+        return False
+    return any(
+        isinstance(item, UserMessageItem)
+        and not isinstance(item.content, str)
+        and any(isinstance(part, _UNSUPPORTED_PART_TYPES) for part in item.content)
+        for item in body.input
+    )
 
 
 def _clamp_max_output_tokens(requested: int | None) -> int:
@@ -115,6 +145,28 @@ def _build_response(
     )
 
 
+async def _run_agent_or_decline(
+    state: AppState,
+    body: CreateResponseBody,
+    history: list[Message],
+    client_instructions: str,
+) -> LoopResult:
+    if _requests_unsupported_modality(body):
+        return LoopResult(
+            text=UNSUPPORTED_MODALITY_MESSAGE, messages=(), iterations=0, stop_reason="end_turn"
+        )
+    assert state.provider is not None  # el llamador ya validó esto
+    return await run_agent(
+        state.provider,
+        state.system_prompt,
+        history,
+        state.tool_ctx,
+        max_iterations=settings.max_loop_iterations,
+        instructions=client_instructions,
+        max_output_tokens=_clamp_max_output_tokens(body.max_output_tokens),
+    )
+
+
 @router.post(
     "/responses",
     dependencies=[Depends(require_bearer), Depends(rate_limit)],
@@ -126,7 +178,7 @@ async def create_response(
     state: Annotated[AppState, Depends(get_app_state)],
 ) -> Response | StreamingResponse:
     if body.background:
-        # CLAUDE.md: no implementamos `background: true`.
+        # No implementamos `background: true` (opcional del spec).
         raise ApiError(
             "background=true no está soportado por este agente.",
             type="invalid_request",
@@ -156,15 +208,7 @@ async def create_response(
             },
         )
 
-    result = await run_agent(
-        state.provider,
-        state.system_prompt,
-        history,
-        state.tool_ctx,
-        max_iterations=settings.max_loop_iterations,
-        instructions=client_instructions,
-        max_output_tokens=_clamp_max_output_tokens(body.max_output_tokens),
-    )
+    result = await _run_agent_or_decline(state, body, history, client_instructions)
     metrics.record_usage(
         input_tokens=result.usage.input_tokens, output_tokens=result.usage.output_tokens
     )
@@ -191,24 +235,14 @@ async def _stream_response(
     created_at: int,
     request: Request,
 ) -> AsyncIterator[str]:
-    """Paso 1-2 de `08_CONTRATO_PLATAFORMA.md` §8.3: SSE *bufferizado* — se genera la respuesta
-    completa y luego se emite la secuencia entera de una vez. Spec-válido (eventos, orden y
-    `sequence_number` correctos); el paso 3 (deltas reales token a token) es una mejora de
-    latencia percibida, no de correctitud, y queda para cuando el loop soporte streaming real
-    con tool-use intercalado."""
+    """SSE *bufferizado* — se genera la respuesta completa y luego se emite la secuencia entera
+    de una vez. Spec-válido (eventos, orden y `sequence_number` correctos); deltas reales token a
+    token es una mejora de latencia percibida, no de correctitud, y queda pendiente para cuando
+    el loop soporte streaming real con tool-use intercalado (docs/platform-contract.md §0)."""
     ev = EventStream()
-    assert state.provider is not None  # ya se validó antes de entrar aquí
 
     try:
-        result = await run_agent(
-            state.provider,
-            state.system_prompt,
-            history,
-            state.tool_ctx,
-            max_iterations=settings.max_loop_iterations,
-            instructions=client_instructions,
-            max_output_tokens=_clamp_max_output_tokens(body.max_output_tokens),
-        )
+        result = await _run_agent_or_decline(state, body, history, client_instructions)
     except Exception:
         log.exception("stream_generation_failed")
         yield ev.emit(

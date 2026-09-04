@@ -1,7 +1,9 @@
 from collections.abc import Callable
 
+import pytest
 from httpx import AsyncClient
 
+from cv_agent.api.routes_responses import UNSUPPORTED_MODALITY_MESSAGE
 from cv_agent.providers.base import ProviderResult
 from cv_agent.providers.fake import FakeProvider
 
@@ -87,3 +89,33 @@ async def test_background_true_no_soportado(
 
     assert r.status_code == 400
     assert r.json()["error"]["param"] == "background"
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        {"type": "input_image", "image_url": "https://example.com/x.png"},
+        {"type": "input_file", "file_url": "https://example.com/x.pdf"},
+        {"type": "input_audio", "input_audio": {"data": "xxx", "format": "wav"}},
+    ],
+)
+async def test_modalidad_no_soportada_no_llama_al_proveedor(
+    part: dict[str, object], make_client: MakeClient, auth_headers: dict[str, str]
+) -> None:
+    """Script vacío ([]): si esto llegara a llamar al proveedor, FakeProvider lo revienta —
+    la aserción real es que la ruta corta nunca toca el LLM (routes_responses.py)."""
+    client, _ = make_client([])
+    payload = {
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hola"}, part],
+            }
+        ]
+    }
+    async with client:
+        r = await client.post("/v1/responses", json=payload, headers=auth_headers)
+
+    assert r.status_code == 200
+    assert r.json()["output"][0]["content"][0]["text"] == UNSUPPORTED_MODALITY_MESSAGE

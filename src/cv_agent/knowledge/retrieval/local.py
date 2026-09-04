@@ -1,8 +1,8 @@
 """BM25 (`bm25s`) + denso (Vertex, opcional) + RRF + MMR sobre numpy — sin base vectorial.
 
-Con n~200 chunks la búsqueda exacta es un matvec de microsegundos (01_ARQUITECTURA.md §2); una
+Con n~200 chunks la búsqueda exacta es un matvec de microsegundos (ARCHITECTURE.md §1); una
 base vectorial gestionada solo añadiría latencia de red y una dependencia externa. Construido una
-sola vez en el lifespan (CLAUDE.md regla 3), nunca por request.
+sola vez en el lifespan, nunca por request.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def _rrf(rankings: list[list[int]], k: int = RRF_K) -> dict[int, float]:
 
 
 def _mmr(query_vec: np.ndarray, embeddings: np.ndarray, candidates: list[int], k: int) -> list[int]:
-    """Con filas L2-normalizadas, `embeddings @ query_vec` es coseno (07_SCRIPTS_Y_CONFIG.md §E.5)."""
+    """Con filas L2-normalizadas, `embeddings @ query_vec` es coseno (norma unitaria -> producto punto = coseno)."""
     sims = embeddings @ query_vec
     pool = list(candidates)
     selected: list[int] = []

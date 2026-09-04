@@ -1,4 +1,4 @@
-"""Estado conversacional para `previous_response_id` (01_ARQUITECTURA.md §4).
+"""Estado conversacional para `previous_response_id` (ARCHITECTURE.md §3).
 
 Guardamos, por `response_id`, el historial interno completo (`tuple[Message, ...]`) tal como
 quedó al terminar ese turno — ya es exactamente `prev.input + prev.output` en orden, así que

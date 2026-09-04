@@ -41,7 +41,7 @@ async def run(
     """`instructions`: texto de menor prioridad (campo `instructions` del cliente + mensajes
     `system`/`developer` del `input`) — se pasa al proveedor como bloque de system NO cacheado,
     separado del corpus cacheado (`system`), para no romper el prefijo cacheable con contenido
-    que cambia por request (01_ARQUITECTURA.md §2 y §4, `docs/platform-contract.md`)."""
+    que cambia por request (ARCHITECTURE.md §1 y §3, `docs/platform-contract.md`)."""
     history = list(messages)
     last_text = ""
     input_tokens = output_tokens = cached_tokens = 0

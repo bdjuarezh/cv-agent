@@ -2,8 +2,8 @@
 set -euo pipefail
 : "${PROJECT:?}" "${REGION:?}"
 
-# --min-instances=1 asume que el endpoint ya está registrado en la plataforma Banorte
-# (Puerta 2, 05_GCP_ONBOARDING.md). Para el primer deploy, antes de registrar, usa 0
+# --min-instances=1 asume que el endpoint ya está registrado en la plataforma Banorte.
+# Para el primer deploy, antes de registrar, usa 0
 # (gcloud run services update cv-agent --region="$REGION" --min-instances=0) y sube a 1
 # justo antes de compartir la URL — así no pagas instancias siempre activas sin necesidad.
 #

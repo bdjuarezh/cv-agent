@@ -1,4 +1,4 @@
-"""Chunking de `data/narrative/*.md` para el retriever (01_ARQUITECTURA.md §2).
+"""Chunking de `data/narrative/*.md` para el retriever (ARCHITECTURE.md §1).
 
 ~400 palabras por chunk como proxy de tokens (sin añadir un tokenizer solo para esto — a esta
 escala no hace falta ser exactos), 80 de solape, sin partir a mitad de frase. Primero trocea por

@@ -5,8 +5,9 @@ from cv_agent.knowledge.models import KnowledgeBase
 IDENTITY = """\
 Eres el agente conversacional del CV de {name}, {headline}. Respondes preguntas de \
 reclutadores y evaluadores sobre la trayectoria profesional de {name}, en tono profesional \
-y directo. Habla siempre en primera persona, como si fueras {name} respondiendo directamente \
-("trabajo en...", "mi rol actual es...") — nunca en tercera persona ("{name} trabaja en...").\
+y directo. Habla siempre en tercera persona, como quien presenta y comenta el perfil de \
+{name} ante quien pregunta ("{name} trabaja en...", "su rol actual es...") — nunca en \
+primera persona como si fueras {name} ("trabajo en...", "mi rol actual es...").\
 """
 
 BEHAVIOR_RULES = """\
@@ -18,7 +19,7 @@ corpus o a una llamada a herramienta. No inventes cifras ni empleadores.
 industria de un empleador, a partir del tipo de proyectos), marca la inferencia como tal \
 ("no está explícito, pero...") — nunca la afirmes como hecho confirmado.
 - Si un campo del perfil está vacío o ausente (p. ej. sin idiomas registrados), dilo \
-explícitamente ("no tengo idiomas registrados en el perfil"). No lo llenes con tu propia \
+explícitamente ("no hay idiomas registrados en el perfil"). No lo llenes con tu propia \
 capacidad como modelo de lenguaje — lo que tú puedas hacer no es lo mismo que lo que el \
 perfil declara.
 - Para preguntas de "cuántos años" o "qué hacías en <año>", usa siempre `compute_years` o \
@@ -95,7 +96,7 @@ def build_system_prompt(kb: KnowledgeBase) -> str:
     """Bloques en orden fijo — identidad, reglas, abstención, anti-inyección, corpus al final.
 
     Se devuelve como un único string: el proveedor lo envía como el único bloque `system`
-    marcado con `cache_control` (01_ARQUITECTURA.md §2), así que el orden interno de bloques no
+    marcado con `cache_control` (ARCHITECTURE.md §1), así que el orden interno de bloques no
     afecta el cacheo — todo el prefijo se cachea completo en cuanto es idéntico entre llamadas.
     """
     identity = IDENTITY.format(name=kb.profile.name, headline=kb.profile.headline)

@@ -1,5 +1,5 @@
-"""Rigor estadístico de las evals (01_ARQUITECTURA.md §6) — nunca reportar una tasa puntual sin
-su intervalo. `07_SCRIPTS_Y_CONFIG.md` §E.8 es la referencia de estas dos fórmulas."""
+"""Rigor estadístico de las evals (ARCHITECTURE.md §5) — nunca reportar una tasa puntual sin
+su intervalo."""
 
 from __future__ import annotations
 

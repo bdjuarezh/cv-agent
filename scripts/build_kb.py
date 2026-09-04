@@ -1,6 +1,6 @@
 """Valida el KB y precomputa embeddings del corpus narrativo. `make kb`.
 
-Requiere Vertex configurado (Puerta 1 de `05_GCP_ONBOARDING.md`) — genera `data/embeddings.npy`
+Requiere Vertex configurado (GCP_PROJECT + credenciales ADC) — genera `data/embeddings.npy`
 y `data/chunks.json`, que se commitean para no recalcular ni llamar a Vertex en cada arranque
 del servicio (`knowledge/retrieval/local.py`)."""
 

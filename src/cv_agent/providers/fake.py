@@ -7,7 +7,7 @@ from cv_agent.providers.base import Message, ProviderResult
 
 
 class FakeProvider:
-    """Guionizable y sin red — usado en todos los tests (CLAUDE.md regla 5).
+    """Guionizable y sin red — usado en todos los tests, que nunca tocan la red real.
 
     Cada llamada a `complete` consume el siguiente `ProviderResult` del guion, en orden.
     Llamar más veces de las guionizadas es un error de test (guion mal dimensionado), no un

@@ -1,4 +1,4 @@
-"""Token bucket en memoria por IP — abuso económico (01_ARQUITECTURA.md §5e). Una ráfaga de n se
+"""Token bucket en memoria por IP — abuso económico (ARCHITECTURE.md §4). Una ráfaga de n se
 admite si n <= b; el sostenido converge a r. Solo aplica a `POST /responses`, no a `/healthz`."""
 
 from __future__ import annotations

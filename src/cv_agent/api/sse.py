@@ -6,7 +6,7 @@ from typing import Any
 
 class EventStream:
     """`event:` == `type` del JSON, `sequence_number` monótonamente creciente, `[DONE]` terminal
-    y sin `id:` (01_ARQUITECTURA.md §1)."""
+    y sin `id:` (spec Open Responses)."""
 
     def __init__(self) -> None:
         self.seq = 0

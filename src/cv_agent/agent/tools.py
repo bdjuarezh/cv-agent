@@ -94,7 +94,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 async def _search_profile(ctx: ToolContext, query: str, k: int = 5) -> list[dict[str, Any]]:
     """BM25 + denso (si hay Vertex) + RRF + MMR, vía `ctx.retriever`
     (`knowledge/retrieval/local.py`) — herramienta de respaldo, no el camino crítico
-    (01_ARQUITECTURA.md §2)."""
+    (ARCHITECTURE.md §1)."""
     chunks = await ctx.retriever.search(query, k=k)
     return [{"chunk_id": c.chunk_id, "source": c.source, "text": c.text} for c in chunks]
 

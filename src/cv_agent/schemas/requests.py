@@ -1,6 +1,6 @@
-"""Modelos del request de POST /v1/responses. Estricto al emitir, permisivo al aceptar
-(CLAUDE.md regla 2): `extra="allow"` en el body para nunca fallar por un campo desconocido —
-la plataforma ya inyecta parámetros extra (`docs/platform-contract.md` §3)."""
+"""Modelos del request de POST /v1/responses. Estricto al emitir, permisivo al aceptar:
+`extra="allow"` en el body para nunca fallar por un campo desconocido — la plataforma ya
+inyecta parámetros extra (`docs/platform-contract.md` §3)."""
 
 from __future__ import annotations
 
@@ -31,6 +31,11 @@ class InputFilePart(_Base):
     filename: str | None = None
 
 
+class InputAudioPart(_Base):
+    type: Literal["input_audio"] = "input_audio"
+    input_audio: dict[str, Any] | None = None
+
+
 class OutputTextPart(_Base):
     type: Literal["output_text"] = "output_text"
     text: str
@@ -38,7 +43,7 @@ class OutputTextPart(_Base):
 
 
 InputContentPart = Annotated[
-    InputTextPart | InputImagePart | InputFilePart,
+    InputTextPart | InputImagePart | InputFilePart | InputAudioPart,
     Field(discriminator="type"),
 ]
 
@@ -99,8 +104,8 @@ class ItemReferenceItem(_Base):
 
 
 class CompactionItem(_Base):
-    """Aceptado sin romper — no implementamos `/v1/responses/compact` (CLAUDE.md, opcional del
-    spec). Ver api/normalize.py: se omite con un log, no se re-expande."""
+    """Aceptado sin romper — no implementamos `/v1/responses/compact` (opcional del spec). Ver
+    api/normalize.py: se omite con un log, no se re-expande."""
 
     type: Literal["compaction"] = "compaction"
     encrypted_content: str | None = None

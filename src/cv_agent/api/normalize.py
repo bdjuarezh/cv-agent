@@ -20,6 +20,7 @@ from cv_agent.schemas.requests import (
     DeveloperMessageItem,
     FunctionCallItem,
     FunctionCallOutputItem,
+    InputAudioPart,
     InputFilePart,
     InputImagePart,
     InputItem,
@@ -33,7 +34,7 @@ from cv_agent.schemas.requests import (
 
 log = structlog.get_logger()
 
-_ContentPart = InputTextPart | InputImagePart | InputFilePart | OutputTextPart
+_ContentPart = InputTextPart | InputImagePart | InputFilePart | InputAudioPart | OutputTextPart
 
 
 @dataclass(frozen=True)

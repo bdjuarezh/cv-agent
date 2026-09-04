@@ -1,6 +1,6 @@
 """Objeto `Response` con TODOS los campos required del spec, siempre presentes aunque sean
 `null` — un cliente estricto que valide contra el OpenAPI falla por una llave faltante, nunca
-por una de más (01_ARQUITECTURA.md §1, verificado contra el OpenAPI real de openresponses.org)."""
+por una de más (verificado contra el OpenAPI real de openresponses.org)."""
 
 from __future__ import annotations
 

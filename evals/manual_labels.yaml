@@ -1,8 +1,8 @@
-# PLANTILLA — 20 ids de golden.yaml para validar al juez (01_ARQUITECTURA.md §6).
+# PLANTILLA — 20 ids de golden.yaml para validar al juez (ARCHITECTURE.md §5).
 #
 # Cómo llenarla:
-# 1. Corre `make eval` al menos una vez (necesita el proveedor real — Puerta 1 de
-#    05_GCP_ONBOARDING.md). Se genera evals/results/<timestamp>.json.
+# 1. Corre `make eval` al menos una vez (necesita el proveedor real configurado). Se genera
+#    evals/results/<timestamp>.json.
 # 2. Para cada id de abajo, lee la pregunta y la respuesta real que dio el agente en ese json.
 # 3. Reemplaza `correct: null` por `true` o `false` — tu propio juicio sobre si la respuesta es
 #    correcta según la rúbrica de golden.yaml, SIN ver el veredicto del juez todavía.

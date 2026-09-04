@@ -1,5 +1,5 @@
 """Envelope de error del spec: `{"error": {message, type, param, code}}`. Nunca se filtra un
-traceback al cliente (CLAUDE.md regla 7) — un 500 no controlado se loguea completo server-side
+traceback al cliente — un 500 no controlado se loguea completo server-side
 y se devuelve genérico."""
 
 from __future__ import annotations

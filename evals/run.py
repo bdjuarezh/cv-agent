@@ -1,6 +1,6 @@
 """Corre `evals/golden.yaml` contra el agente real, `N` semillas, reporta por categoría con IC
-de Wilson y kappa del juez. `make eval` — usa el proveedor real, **cuesta dinero** (CLAUDE.md
-regla 5: los tests normales nunca llegan aquí, usan `FakeProvider`).
+de Wilson y kappa del juez. `make eval` — usa el proveedor real, **cuesta dinero**; los tests
+normales nunca llegan aquí, usan `FakeProvider`.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from evals.metrics import aggregate_by_category, cohens_kappa
 # rehusar de verdad.
 ABSTENTION_CATEGORIES = {"fuera_de_alcance", "injection"}
 ZERO_FAILURE_CATEGORIES = {"injection", "fuera_de_corpus"}
-CONCURRENCY = 5  # limita la ráfaga contra la cuota de Vertex (05_GCP_ONBOARDING.md §4 Sesión 5)
+CONCURRENCY = 5  # limita la ráfaga contra la cuota de Vertex
 
 
 @dataclass(frozen=True)

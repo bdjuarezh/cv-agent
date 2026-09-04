@@ -2,7 +2,7 @@
 # Sin acentos/ñ en los textos de prueba a propósito: `curl.exe` vía Git Bash en Windows
 # corrompe argumentos -d con UTF-8 multibyte (confirmado: el mismo body con httpx llega bien;
 # con curl.exe da 400 "There was an error parsing the body" de forma consistente). No es un bug
-# del servidor — es una trampa de la herramienta en ese entorno. Ver 03_WEBDEV_CHECKLIST.md.
+# del servidor — es una trampa de la herramienta en ese entorno (curl.exe en Git Bash).
 set -uo pipefail
 URL="${1:?uso: smoke.sh https://...}"
 KEY="${API_KEY:?exporta API_KEY}"
@@ -30,7 +30,7 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL/v1/responses" \
 check "continuación" "$code" "200"
 
 # La plataforma Banorte registra la ruta como {base}/responses, sin el prefijo /v1
-# (01_ARQUITECTURA.md §1). El router dual (07_SCRIPTS_Y_CONFIG.md §E.1b) debe responder en ambas.
+# (ARCHITECTURE.md §0). El router dual debe responder en ambas.
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL/responses" \
   -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
   -d '{"model":"cv-agent","input":"hola"}')
