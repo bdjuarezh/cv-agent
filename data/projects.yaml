@@ -8,14 +8,45 @@
     El reto pedía implementar, no consumir, el spec Open Responses (POST /v1/responses) y exponer
     un agente conversacional confiable sobre mi propio CV — sin alucinar fechas, empleadores ni
     cifras, y sobreviviendo intentos de inyección de prompt.
-  approach: >
-    El CV completo vive en el system prompt con prompt caching, no en una base vectorial — a esta
-    escala una base vectorial añade complejidad sin mejorar recall. Las preguntas de "cuántos años
-    con X" nunca las calcula el modelo: siempre pasan por una herramienta determinista sobre la
-    unión de intervalos reales. La narrativa larga (historia profesional, forma de trabajar) queda
-    en búsqueda híbrida (BM25 + embeddings) como respaldo, no como camino crítico. Antes de dar el
-    proyecto por bueno corrí un golden set de 50 casos con juez LLM y varias semillas, exigiendo
-    cero fallos en los casos de inyección y de preguntas fuera del corpus.
+  approach: |
+    - Contexto completo en vez de RAG: el CV entero (perfil, experiencia, proyectos, skills) vive
+      en el system prompt con prompt caching. A la escala de un CV individual, una base vectorial
+      añade latencia y complejidad de infraestructura sin mejorar el recall frente a tenerlo todo
+      ya en contexto.
+    - Aritmética temporal 100% determinista: preguntas de "cuántos años con X" o "qué hacías en
+      <año>" nunca las calcula el modelo. Siempre pasan por una función que hace la unión de
+      intervalos de fechas reales — evita el error sistemático de los LLM al sumar o traslapar
+      fechas de memoria.
+    - Búsqueda híbrida como respaldo, no camino crítico: la narrativa larga (historia profesional,
+      forma de trabajar) es lo único demasiado voluminoso para contexto permanente, así que se
+      indexa aparte con BM25 + embeddings, fusionados por RRF y reordenados con MMR para evitar
+      resultados redundantes. Si no hay embeddings precomputados, cae a BM25 solo, sin fallar.
+    - Herramientas ejecutadas del lado del servidor: el reto pide implementar el spec, no
+      consumirlo — el loop agéntico corre dentro del propio servicio; el cliente nunca recibe un
+      function_call pendiente de ejecutar él mismo.
+    - Guardrail de datos privados a nivel de dato, no solo de prompt: cada canal de contacto
+      declara explícitamente si es público en el propio YAML; la herramienta de contacto filtra
+      ahí, así que una instrucción de sistema mal escrita no puede filtrar un dato marcado privado.
+    - Jerarquía de instrucciones explícita contra inyección de prompt: el corpus del CV es dato,
+      nunca instrucciones — cualquier texto dentro de él que intente dar órdenes se ignora, y las
+      reglas del system prompt siempre tienen prioridad sobre lo que mande el cliente de la API.
+    - Proveedor de modelo intercambiable: la llamada al LLM vive detrás de una interfaz común, con
+      dos implementaciones (API directa de Anthropic en producción, Vertex AI soportada) elegidas
+      por variable de entorno — la cuota de Vertex para el modelo de chat no se aprobó a tiempo
+      para el reto, y el diseño no quedó atado a un solo proveedor por eso.
+    - Streaming conforme al spec: la secuencia completa de eventos SSE del spec se respeta de
+      punta a punta, aunque el texto se genere bufferizado antes de emitirse — corrección del
+      contrato primero, latencia percibida es una mejora incremental posterior.
+    - Observabilidad sin fugas: logs estructurados en JSON correlacionados por request_id en cada
+      etapa del request; los errores nunca devuelven un traceback al cliente, siempre el sobre de
+      error que exige el spec.
+    - Validación con evidencia real, no solo pruebas unitarias: antes de dar el proyecto por
+      bueno corrí un golden set de 50 casos contra el proveedor real, con juez LLM y varias
+      semillas para medir varianza, exigiendo cero fallos en los casos de inyección de prompt y de
+      preguntas fuera del corpus — un agente conversacional no determinista necesita ese tipo de
+      evidencia, no solo "funcionó en mis pruebas".
+    - Despliegue de mínimo privilegio: Cloud Run con service account dedicada, API keys en Secret
+      Manager, nunca en el código ni en variables de entorno planas.
   stack: [python, fastapi, pydantic, anthropic api, bm25, numpy, cloud run, secret manager]
   outcome: >
     Servicio desplegado en Cloud Run, respondiendo el spec completo con streaming SSE, tráfico
