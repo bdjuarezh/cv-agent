@@ -56,14 +56,19 @@ _UNSUPPORTED_PART_TYPES = (InputImagePart, InputFilePart, InputAudioPart)
 
 
 def _requests_unsupported_modality(body: CreateResponseBody) -> bool:
+    """Solo el último mensaje del usuario, no todo el historial: la plataforma reproduce el
+    transcript completo en `input` en cada turno (docs/platform-contract.md §4), así que un
+    adjunto ya rechazado en un turno anterior seguiría apareciendo en `body.input` para siempre
+    — sin este acotamiento, un solo intento de subir un archivo dejaba el agente respondiendo
+    con el mensaje de "no soportado" en todos los turnos siguientes, sin importar la pregunta."""
     if isinstance(body.input, str):
         return False
-    return any(
-        isinstance(item, UserMessageItem)
-        and not isinstance(item.content, str)
-        and any(isinstance(part, _UNSUPPORTED_PART_TYPES) for part in item.content)
-        for item in body.input
+    last_user_message = next(
+        (item for item in reversed(body.input) if isinstance(item, UserMessageItem)), None
     )
+    if last_user_message is None or isinstance(last_user_message.content, str):
+        return False
+    return any(isinstance(part, _UNSUPPORTED_PART_TYPES) for part in last_user_message.content)
 
 
 def _clamp_max_output_tokens(requested: int | None) -> int:

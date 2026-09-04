@@ -119,3 +119,40 @@ async def test_modalidad_no_soportada_no_llama_al_proveedor(
 
     assert r.status_code == 200
     assert r.json()["output"][0]["content"][0]["text"] == UNSUPPORTED_MODALITY_MESSAGE
+
+
+async def test_adjunto_rechazado_no_afecta_turnos_siguientes(
+    make_client: MakeClient, auth_headers: dict[str, str]
+) -> None:
+    """Regresión: la plataforma reproduce el transcript completo en `input` en cada turno — el
+    adjunto rechazado del primer turno seguía apareciendo en `body.input` para siempre y el
+    agente quedaba respondiendo "no soportado" en todos los turnos siguientes, sin importar la
+    pregunta (reportado en producción, 2026-09-04)."""
+    client, _ = make_client([ProviderResult(text="Trabaja en Tellso.")])
+    payload = {
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "mira mi CV"},
+                    {"type": "input_file", "file_url": "https://example.com/cv.pdf"},
+                ],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": UNSUPPORTED_MODALITY_MESSAGE}],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": "¿en qué empresa trabajas?",
+            },
+        ]
+    }
+    async with client:
+        r = await client.post("/v1/responses", json=payload, headers=auth_headers)
+
+    assert r.status_code == 200
+    assert r.json()["output"][0]["content"][0]["text"] == "Trabaja en Tellso."
